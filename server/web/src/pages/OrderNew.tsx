@@ -13,6 +13,7 @@ export default function OrderNew() {
   const navigate = useNavigate();
   const [skus, setSkus] = useState<Sku[]>([]);
   const [stockBySku, setStockBySku] = useState<Map<string, number>>(new Map());
+  const [committedBySku, setCommittedBySku] = useState<Map<string, number>>(new Map());
   const [buyerName, setBuyerName] = useState("");
   const [buyerContact, setBuyerContact] = useState("");
   const [vehicleCapacityNote, setVehicleCapacityNote] = useState("");
@@ -23,9 +24,15 @@ export default function OrderNew() {
   useEffect(() => {
     api.get<Sku[]>("/skus").then(setSkus).catch(() => {});
     // Live availability while composing — not just after the order exists.
+    // availableQty is on-hand minus whatever's already committed to other
+    // orders, not raw on-hand, so this doesn't offer stock that's already
+    // spoken for elsewhere.
     api
       .get<StockSummaryEntry[]>("/stock/summary")
-      .then((rows) => setStockBySku(new Map(rows.map((r) => [r.skuId, r.totalQty]))))
+      .then((rows) => {
+        setStockBySku(new Map(rows.map((r) => [r.skuId, r.availableQty])));
+        setCommittedBySku(new Map(rows.map((r) => [r.skuId, r.committedQty])));
+      })
       .catch(() => {});
   }, []);
 
@@ -131,7 +138,8 @@ export default function OrderNew() {
                 </div>
                 {available !== null && (
                   <p className={`text-xs ${insufficient ? "text-red-600 dark:text-red-400" : "text-slate-400"}`}>
-                    {available} in stock{insufficient ? " — not enough for this quantity" : ""}
+                    {available} available{insufficient ? " — not enough for this quantity" : ""}
+                    {(committedBySku.get(line.skuId) ?? 0) > 0 && ` (${committedBySku.get(line.skuId)} already committed to other orders)`}
                   </p>
                 )}
               </div>

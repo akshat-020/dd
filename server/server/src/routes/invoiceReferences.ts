@@ -4,6 +4,11 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { applyStockMovement } from "../lib/stock.js";
+import { encryptNumber, decryptNumber } from "../lib/crypto.js";
+
+function serializeLines<T extends { price: string }>(lines: T[]) {
+  return lines.map((l) => ({ ...l, price: decryptNumber(l.price) }));
+}
 
 // Owner/Accountant-only layer that links an order to the actual invoice
 // created in Tally, without replacing Tally as the invoice system of record.
@@ -17,7 +22,7 @@ invoiceReferencesRouter.get("/order/:orderId", async (req, res) => {
     include: { lines: { include: { sku: true } }, createdBy: { select: { id: true, name: true } } },
     orderBy: { createdAt: "desc" },
   });
-  res.json(refs);
+  res.json(refs.map((r) => ({ ...r, lines: serializeLines(r.lines) })));
 });
 
 invoiceReferencesRouter.get("/:id", async (req, res) => {
@@ -26,7 +31,7 @@ invoiceReferencesRouter.get("/:id", async (req, res) => {
     include: { lines: { include: { sku: true } }, order: true, createdBy: { select: { id: true, name: true } } },
   });
   if (!ref) return res.status(404).json({ error: "Invoice reference not found" });
-  res.json(ref);
+  res.json({ ...ref, lines: serializeLines(ref.lines) });
 });
 
 const createSchema = z.object({
@@ -53,7 +58,7 @@ invoiceReferencesRouter.post("/", async (req: AuthedRequest, res) => {
       orderId: parsed.data.orderId,
       date: parsed.data.date ? new Date(parsed.data.date) : new Date(),
       createdById: req.user!.id,
-      lines: { create: parsed.data.lines.map((l) => ({ skuId: l.skuId, qty: l.qty, price: l.price })) },
+      lines: { create: parsed.data.lines.map((l) => ({ skuId: l.skuId, qty: l.qty, price: encryptNumber(l.price) })) },
     },
     include: { lines: true },
   });
@@ -63,7 +68,7 @@ invoiceReferencesRouter.post("/", async (req: AuthedRequest, res) => {
   }
 
   await recordAudit({ userId: req.user!.id, action: "CREATE", entityType: "InvoiceReference", entityId: ref.id, after: ref });
-  res.status(201).json(ref);
+  res.status(201).json({ ...ref, lines: serializeLines(ref.lines) });
 });
 
 const cancelSchema = z.object({ reverseStock: z.boolean().default(false) });
@@ -118,7 +123,7 @@ invoiceReferencesRouter.post("/:id/cancel", async (req: AuthedRequest, res) => {
     after: { status: "CANCELLED", reverseStock: parsed.data.reverseStock },
   });
   const updated = await prisma.invoiceReference.findUnique({ where: { id: ref.id }, include: { lines: true } });
-  res.json(updated);
+  res.json({ ...updated, lines: serializeLines(updated!.lines) });
 });
 
 const adjustSchema = z.object({
@@ -165,7 +170,7 @@ invoiceReferencesRouter.post("/:id/adjust", async (req: AuthedRequest, res) => {
 
       await tx.invoiceReferenceLine.update({
         where: { id: existingLine.id },
-        data: { qty: newQty, price: update.price ?? existingLine.price },
+        data: { qty: newQty, price: update.price !== undefined ? encryptNumber(update.price) : existingLine.price },
       });
     }
     await tx.invoiceReference.update({ where: { id: ref.id }, data: { status: "ADJUSTED" } });
@@ -173,5 +178,5 @@ invoiceReferencesRouter.post("/:id/adjust", async (req: AuthedRequest, res) => {
 
   await recordAudit({ userId: req.user!.id, action: "ADJUST", entityType: "InvoiceReference", entityId: ref.id, before: ref, after: parsed.data });
   const updated = await prisma.invoiceReference.findUnique({ where: { id: ref.id }, include: { lines: true } });
-  res.json(updated);
+  res.json({ ...updated, lines: serializeLines(updated!.lines) });
 });

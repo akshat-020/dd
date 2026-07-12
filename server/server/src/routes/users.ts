@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { ROLES } from "../lib/roles.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
+import { passwordSchema } from "../lib/password.js";
 
 export const usersRouter = Router();
 
@@ -13,7 +14,7 @@ usersRouter.use(requireAuth);
 const createUserSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
-  password: z.string().min(6),
+  password: passwordSchema,
   role: z.enum(ROLES),
 });
 
@@ -56,7 +57,7 @@ const updateUserSchema = z.object({
   name: z.string().min(1).optional(),
   role: z.enum(ROLES).optional(),
   active: z.boolean().optional(),
-  password: z.string().min(6).optional(),
+  password: passwordSchema.optional(),
   canScanPutaway: z.boolean().optional(),
   canLogInwardEntry: z.boolean().optional(),
 });

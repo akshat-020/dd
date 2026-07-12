@@ -15,6 +15,7 @@ import Receiving from "./pages/Receiving";
 import Pricing from "./pages/Pricing";
 import Reports from "./pages/Reports";
 import Users from "./pages/Users";
+import Security from "./pages/Security";
 
 function LoginRoute() {
   const { user, loading } = useAuth();
@@ -82,6 +83,7 @@ export default function App() {
               }
             />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/security" element={<Security />} />
             <Route
               path="/users"
               element={

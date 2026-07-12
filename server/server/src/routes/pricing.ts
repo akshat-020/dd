@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
+import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 
 // Mounted at /api/orders — everything here is Owner/Accountant-only at the
 // route level (requireRole below), which is the server-side enforcement the
@@ -27,7 +28,7 @@ pricingRouter.get("/:id/pricing", requireRole("OWNER", "ACCOUNTANT"), async (req
       skuCode: l.sku.code,
       skuName: l.sku.name,
       qty: l.qtyFinalized ?? l.qtyRequested,
-      unitPrice: l.price?.unitPrice ?? null,
+      unitPrice: l.price ? decryptNumber(l.price.unitPrice) : null,
     })),
   });
 });
@@ -47,10 +48,11 @@ pricingRouter.put("/:id/pricing", requireRole("OWNER", "ACCOUNTANT"), async (req
   await prisma.$transaction(async (tx) => {
     for (const line of parsed.data.lines) {
       if (!lineIds.has(line.lineId)) continue;
+      const encrypted = encryptNumber(line.unitPrice);
       await tx.orderLinePrice.upsert({
         where: { orderLineId: line.lineId },
-        update: { unitPrice: line.unitPrice, updatedById: req.user!.id },
-        create: { orderLineId: line.lineId, unitPrice: line.unitPrice, updatedById: req.user!.id },
+        update: { unitPrice: encrypted, updatedById: req.user!.id },
+        create: { orderLineId: line.lineId, unitPrice: encrypted, updatedById: req.user!.id },
       });
     }
   });
@@ -60,6 +62,6 @@ pricingRouter.put("/:id/pricing", requireRole("OWNER", "ACCOUNTANT"), async (req
   const updated = await prisma.order.findUnique({ where: { id: order.id }, include: { lines: { include: { sku: true, price: true } } } });
   res.json({
     orderId: updated!.id,
-    lines: updated!.lines.map((l) => ({ lineId: l.id, skuId: l.skuId, skuCode: l.sku.code, unitPrice: l.price?.unitPrice ?? null })),
+    lines: updated!.lines.map((l) => ({ lineId: l.id, skuId: l.skuId, skuCode: l.sku.code, unitPrice: l.price ? decryptNumber(l.price.unitPrice) : null })),
   });
 });

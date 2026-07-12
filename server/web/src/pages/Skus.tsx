@@ -124,6 +124,8 @@ export default function SkusPage() {
                 expanded={expandedId === s.id}
                 onToggle={() => setExpandedId(expandedId === s.id ? null : s.id)}
                 canSeeStock={canSeeStock}
+                canEdit={canEdit}
+                onSaved={load}
               />
             ))}
           </tbody>
@@ -140,34 +142,121 @@ function SkuRow({
   expanded,
   onToggle,
   canSeeStock,
+  canEdit,
+  onSaved,
 }: {
   sku: Sku;
   qty: number | null;
   expanded: boolean;
   onToggle: () => void;
   canSeeStock: boolean;
+  canEdit: boolean;
+  onSaved: () => void;
 }) {
+  const canExpand = canSeeStock || canEdit;
   return (
     <>
-      <tr onClick={canSeeStock ? onToggle : undefined} className={canSeeStock ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}>
+      <tr onClick={canExpand ? onToggle : undefined} className={canExpand ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}>
         <td className="px-4 py-2 font-mono text-xs">{sku.code}</td>
         <td className="px-4 py-2 text-slate-900 dark:text-slate-50">{sku.name}</td>
         <td className="px-4 py-2">{sku.unit}</td>
         <td className="px-4 py-2">{sku.category ?? "—"}</td>
         {canSeeStock && (
           <td className={`px-4 py-2 ${qty !== null && qty <= sku.reorderThreshold ? "text-red-600 dark:text-red-400" : ""}`}>
-            {qty} {expanded ? "▲" : "▼"}
+            {qty} {canExpand && (expanded ? "▲" : "▼")}
           </td>
         )}
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={5} className="bg-slate-50 px-4 py-3 dark:bg-slate-800">
-            <BatchHistory skuId={sku.id} skuCode={sku.code} />
+          <td colSpan={canSeeStock ? 5 : 4} className="bg-slate-50 px-4 py-3 dark:bg-slate-800">
+            {canEdit && <SkuEditForm sku={sku} onSaved={onSaved} />}
+            {canSeeStock && <BatchHistory skuId={sku.id} skuCode={sku.code} />}
           </td>
         </tr>
       )}
     </>
+  );
+}
+
+function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    name: sku.name,
+    unit: sku.unit,
+    category: sku.category ?? "",
+    reorderThreshold: String(sku.reorderThreshold),
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.patch(`/skus/${sku.id}`, {
+        name: form.name,
+        unit: form.unit,
+        category: form.category || undefined,
+        reorderThreshold: Number(form.reorderThreshold) || 0,
+      });
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save changes");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        className="mb-3 text-xs font-medium text-blue-600 underline dark:text-blue-400"
+      >
+        Edit SKU details
+      </button>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSave} onClick={(e) => e.stopPropagation()} className="mb-3 space-y-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
+      <p className="text-xs text-slate-400">Code {sku.code} can't be changed — it's what QR labels and stock history reference.</p>
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} required />
+        <Field label="Unit" value={form.unit} onChange={(v) => setForm({ ...form, unit: v })} required />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Category" value={form.category} onChange={(v) => setForm({ ...form, category: v })} />
+        <Field label="Reorder threshold" type="number" value={form.reorderThreshold} onChange={(v) => setForm({ ...form, reorderThreshold: v })} />
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={submitting}
+          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+        >
+          {submitting ? "Saving…" : "Save changes"}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setEditing(false);
+          }}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 

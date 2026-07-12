@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import type { prisma as prismaClient } from "./prisma.js";
 
 export class InsufficientStockError extends Error {
   constructor(public skuId: string, public locationId: string, public available: number, public requested: number) {
@@ -63,4 +64,50 @@ export async function applyStockMovement(
   });
 
   return { stockItem, movement };
+}
+
+// How much of a SKU is already promised to *other* orders and not yet
+// reflected as a physical deduction in StockItem — i.e. still-open DRAFT
+// order lines (a soft promise made at order-intake time) plus FINALIZED
+// orders' not-yet-picked pick list quantity (a hard allocation made at
+// finalize time, but stock isn't actually decremented until the physical
+// pick-confirm scan). LOADED/INVOICED/CANCELLED orders need no entry here:
+// LOADED means every pick list item already hit applyStockMovement, so it's
+// already reflected in StockItem; CANCELLED/INVOICED never held stock or
+// already released it. Pass `excludeOrderId` to leave the order being
+// evaluated out of its own commitment total.
+export async function getCommittedQuantities(
+  db: Pick<typeof prismaClient, "orderLine" | "pickListItem">,
+  skuIds: string[],
+  excludeOrderId?: string
+): Promise<Map<string, number>> {
+  const committed = new Map<string, number>();
+  if (skuIds.length === 0) return committed;
+
+  const draftLines = await db.orderLine.findMany({
+    where: {
+      skuId: { in: skuIds },
+      order: { status: "DRAFT", ...(excludeOrderId ? { id: { not: excludeOrderId } } : {}) },
+    },
+    select: { skuId: true, qtyRequested: true, qtyFinalized: true },
+  });
+  for (const line of draftLines) {
+    const qty = line.qtyFinalized ?? line.qtyRequested;
+    committed.set(line.skuId, (committed.get(line.skuId) ?? 0) + qty);
+  }
+
+  const pendingPickItems = await db.pickListItem.findMany({
+    where: {
+      skuId: { in: skuIds },
+      status: { not: "PICKED" },
+      order: { status: "FINALIZED", ...(excludeOrderId ? { id: { not: excludeOrderId } } : {}) },
+    },
+    select: { skuId: true, qtyToPick: true, qtyPicked: true },
+  });
+  for (const item of pendingPickItems) {
+    const remaining = Math.max(item.qtyToPick - item.qtyPicked, 0);
+    committed.set(item.skuId, (committed.get(item.skuId) ?? 0) + remaining);
+  }
+
+  return committed;
 }
