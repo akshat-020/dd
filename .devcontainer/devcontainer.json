@@ -1,0 +1,17 @@
+{
+  "name": "OMS/ERP dev",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "postCreateCommand": "npm run setup",
+  "forwardPorts": [4000, 5173],
+  "portsAttributes": {
+    "5173": {
+      "label": "Web app (open this on your phone)",
+      "visibility": "public",
+      "onAutoForward": "notify"
+    },
+    "4000": {
+      "label": "API (internal — reached via the web app's /api proxy)",
+      "visibility": "private"
+    }
+  }
+}
