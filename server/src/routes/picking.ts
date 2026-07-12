@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireScanAccess, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { applyStockMovement, InsufficientStockError } from "../lib/stock.js";
 
@@ -31,7 +31,7 @@ pickingRouter.get("/items/:itemId", async (req, res) => {
 
 const scanLocationSchema = z.object({ locationCode: z.string().min(1) });
 
-pickingRouter.post("/items/:itemId/scan-location", requireRole("OWNER", "WAREHOUSE"), async (req, res) => {
+pickingRouter.post("/items/:itemId/scan-location", requireScanAccess, async (req, res) => {
   const parsed = scanLocationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 
@@ -48,7 +48,7 @@ pickingRouter.post("/items/:itemId/scan-location", requireRole("OWNER", "WAREHOU
 
 const scanSkuSchema = z.object({ label: z.string().min(1) });
 
-pickingRouter.post("/items/:itemId/scan-sku", requireRole("OWNER", "WAREHOUSE"), async (req, res) => {
+pickingRouter.post("/items/:itemId/scan-sku", requireScanAccess, async (req, res) => {
   const parsed = scanSkuSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 
@@ -59,8 +59,12 @@ pickingRouter.post("/items/:itemId/scan-sku", requireRole("OWNER", "WAREHOUSE"),
     return res.status(409).json({ error: "Scan the location QR before scanning the SKU label" });
   }
 
+  // Accept either the full encoded label ("SKU:code|BATCH:x|DATE:y") from a
+  // camera scan, or a bare SKU code from the manual-entry fallback — mirrors
+  // the same fallback the client uses before it ever calls this endpoint.
   const skuMatch = /SKU:([^|]+)/.exec(parsed.data.label);
-  if (!skuMatch || skuMatch[1] !== item.sku.code) {
+  const scannedCode = skuMatch ? skuMatch[1] : parsed.data.label;
+  if (scannedCode !== item.sku.code) {
     return res.status(409).json({ error: "Scanned SKU label does not match the pick list item — wrong item", expected: item.sku.code });
   }
   const updated = await prisma.pickListItem.update({ where: { id: item.id }, data: { status: "SKU_CONFIRMED" } });
@@ -69,7 +73,7 @@ pickingRouter.post("/items/:itemId/scan-sku", requireRole("OWNER", "WAREHOUSE"),
 
 const confirmSchema = z.object({ quantity: z.number().int().positive() });
 
-pickingRouter.post("/items/:itemId/confirm", requireRole("OWNER", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: AuthedRequest, res) => {
   const parsed = confirmSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 

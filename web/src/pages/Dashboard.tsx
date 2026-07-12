@@ -10,14 +10,19 @@ export default function Dashboard() {
   const [lowStock, setLowStock] = useState<LowStockSku[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Warehouse's visibility is task-scoped and doesn't include general stock
+  // browsing (low-stock is an inventory-wide view), so that call is skipped
+  // entirely for them rather than firing and getting a 403.
+  const canSeeLowStock = hasRole("OWNER", "ACCOUNTANT", "SALES");
+
   useEffect(() => {
-    Promise.all([api.get<Order[]>("/orders"), api.get<LowStockSku[]>("/stock/low-stock")])
-      .then(([o, l]) => {
-        setOrders(o);
-        setLowStock(l);
-      })
-      .catch((e) => setError(e.message));
+    api.get<Order[]>("/orders").then(setOrders).catch((e) => setError(e.message));
   }, []);
+
+  useEffect(() => {
+    if (!canSeeLowStock) return;
+    api.get<LowStockSku[]>("/stock/low-stock").then(setLowStock).catch(() => {});
+  }, [canSeeLowStock]);
 
   const draft = orders.filter((o) => o.status === "DRAFT").length;
   const finalized = orders.filter((o) => o.status === "FINALIZED").length;
@@ -38,7 +43,7 @@ export default function Dashboard() {
         <StatCard label="Loaded" value={loaded} to="/orders" />
       </div>
 
-      {hasRole("OWNER", "ACCOUNTANT", "WAREHOUSE") && (
+      {canSeeLowStock && (
         <section>
           <h2 className="mb-2 text-base font-semibold text-slate-900 dark:text-slate-50">Low stock</h2>
           {lowStock.length === 0 ? (

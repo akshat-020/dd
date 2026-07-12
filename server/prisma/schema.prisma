@@ -20,6 +20,13 @@ model User {
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
+  // Composable add-on permission: lets a Sales-staff account also perform
+  // scan-based putaway/pick actions without becoming a Warehouse role (and
+  // without inheriting Warehouse's task-scoped visibility restriction).
+  // Meaningless for other roles — Owner/Warehouse always have scan access,
+  // Accountant never does, regardless of this flag. Grantable by Owner only.
+  canScanPutaway Boolean @default(false)
+
   ordersCreated      Order[]            @relation("OrderCreatedBy")
   stockMovements     StockMovement[]
   pickListItemsDone  PickListItem[]

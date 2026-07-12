@@ -9,7 +9,12 @@ export const locationsRouter = Router();
 
 locationsRouter.use(requireAuth);
 
-locationsRouter.get("/", async (req, res) => {
+// Browsing the full location list is general "inventory picture" browsing,
+// so it's excluded from Warehouse's task-scoped visibility. The two lookups
+// below (by id, by code) are the "standalone location-lookup search"
+// exception — always available to every role, since they return a single
+// location's identity (zone/rack/bin) with no quantities attached.
+locationsRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
   const activeOnly = req.query.active !== "false";
   const locations = await prisma.location.findMany({
     where: activeOnly ? { active: true } : undefined,

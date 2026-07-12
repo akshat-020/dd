@@ -6,6 +6,9 @@ export interface User {
   email: string;
   role: Role;
   active?: boolean;
+  // Composable add-on permission, only meaningful for SALES accounts —
+  // Owner/Warehouse always have scan access regardless of this flag.
+  canScanPutaway?: boolean;
 }
 
 export interface Sku {
