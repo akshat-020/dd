@@ -8,6 +8,10 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   hasRole: (...roles: Role[]) => boolean;
+  // Owner/Warehouse always have scan-based putaway/pick access; Sales only
+  // if individually granted (user.canScanPutaway) — mirrors the server's
+  // canUseScanActions check.
+  hasScanAccess: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -53,7 +57,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasRole = useCallback((...roles: Role[]) => !!user && roles.includes(user.role), [user]);
 
-  const value = useMemo(() => ({ user, loading, login, logout, hasRole }), [user, loading, login, logout, hasRole]);
+  const hasScanAccess = !!user && (user.role === "OWNER" || user.role === "WAREHOUSE" || (user.role === "SALES" && !!user.canScanPutaway));
+
+  const value = useMemo(
+    () => ({ user, loading, login, logout, hasRole, hasScanAccess }),
+    [user, loading, login, logout, hasRole, hasScanAccess]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

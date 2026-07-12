@@ -40,7 +40,10 @@ type Tab = "stock" | "turnaround" | "sales" | "audit";
 export default function Reports() {
   const { hasRole } = useAuth();
   const canSeeMoney = hasRole("OWNER", "ACCOUNTANT");
-  const [tab, setTab] = useState<Tab>("stock");
+  // Stock-on-hand is general inventory browsing, excluded from Warehouse's
+  // task-scoped visibility (same restriction as the Stock/Locations pages).
+  const canSeeStock = hasRole("OWNER", "ACCOUNTANT", "SALES");
+  const [tab, setTab] = useState<Tab>(canSeeStock ? "stock" : "turnaround");
 
   const [stock, setStock] = useState<StockOnHandRow[]>([]);
   const [turnaround, setTurnaround] = useState<TurnaroundRow[]>([]);
@@ -48,14 +51,14 @@ export default function Reports() {
   const [audit, setAudit] = useState<AuditLogEntry[]>([]);
 
   useEffect(() => {
-    if (tab === "stock") api.get<StockOnHandRow[]>("/reports/stock-on-hand").then(setStock).catch(() => {});
+    if (tab === "stock" && canSeeStock) api.get<StockOnHandRow[]>("/reports/stock-on-hand").then(setStock).catch(() => {});
     if (tab === "turnaround") api.get<TurnaroundRow[]>("/reports/fulfillment-turnaround").then(setTurnaround).catch(() => {});
     if (tab === "sales" && canSeeMoney) api.get<SalesRow[]>("/reports/sales").then(setSales).catch(() => {});
     if (tab === "audit" && canSeeMoney) api.get<AuditLogEntry[]>("/reports/audit-log").then(setAudit).catch(() => {});
-  }, [tab, canSeeMoney]);
+  }, [tab, canSeeMoney, canSeeStock]);
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: "stock", label: "Stock on hand" },
+    ...(canSeeStock ? [{ key: "stock" as Tab, label: "Stock on hand" }] : []),
     { key: "turnaround", label: "Turnaround" },
     ...(canSeeMoney ? [{ key: "sales" as Tab, label: "Sales" }, { key: "audit" as Tab, label: "Audit log" }] : []),
   ];

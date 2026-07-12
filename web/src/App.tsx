@@ -52,7 +52,7 @@ export default function App() {
             <Route
               path="/picking"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]}>
+                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
                   <Picking />
                 </ProtectedRoute>
               }
@@ -60,7 +60,7 @@ export default function App() {
             <Route
               path="/picking/:orderId"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]}>
+                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
                   <PickingSession />
                 </ProtectedRoute>
               }
@@ -68,7 +68,7 @@ export default function App() {
             <Route
               path="/receiving"
               element={
-                <ProtectedRoute roles={["OWNER", "ACCOUNTANT", "WAREHOUSE"]}>
+                <ProtectedRoute roles={["OWNER", "ACCOUNTANT", "WAREHOUSE"]} allowScanAccess>
                   <Receiving />
                 </ProtectedRoute>
               }

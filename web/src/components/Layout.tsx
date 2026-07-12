@@ -6,14 +6,17 @@ interface NavItem {
   to: string;
   label: string;
   roles?: Role[];
+  // Also visible to a Sales account with the granted scan permission, even
+  // though "SALES" isn't in `roles`.
+  scanGated?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard" },
   { to: "/orders", label: "Orders" },
   { to: "/orders/new", label: "New Order", roles: ["OWNER", "SALES"] },
-  { to: "/picking", label: "Picking", roles: ["OWNER", "WAREHOUSE"] },
-  { to: "/receiving", label: "Receiving", roles: ["OWNER", "ACCOUNTANT", "WAREHOUSE"] },
+  { to: "/picking", label: "Picking", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
+  { to: "/receiving", label: "Receiving", roles: ["OWNER", "ACCOUNTANT", "WAREHOUSE"], scanGated: true },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
   { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },
@@ -22,8 +25,8 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export default function Layout() {
-  const { user, logout, hasRole } = useAuth();
-  const visibleItems = NAV_ITEMS.filter((item) => !item.roles || hasRole(...item.roles));
+  const { user, logout, hasRole, hasScanAccess } = useAuth();
+  const visibleItems = NAV_ITEMS.filter((item) => (!item.roles || hasRole(...item.roles)) || (item.scanGated && hasScanAccess));
 
   return (
     <div className="flex min-h-full flex-col bg-slate-50 dark:bg-slate-950">

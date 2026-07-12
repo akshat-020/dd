@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireRole, requireScanAccess, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateQrPngBuffer, generateQrSvg, encodeSkuBatchLabel } from "../lib/qr.js";
 import { applyStockMovement, InsufficientStockError } from "../lib/stock.js";
@@ -75,7 +75,11 @@ stockRouter.get("/batches/resolve/:label", async (req, res) => {
 
 // ---- Stock queries ----
 
-stockRouter.get("/", async (req, res) => {
+// General stock browsing is deliberately NOT available to Warehouse staff —
+// their visibility is task-scoped to whatever pick list/putaway they're
+// actively working (see /api/picking/* and the putaway flow), per the
+// permission model. Owner/Accountant/Sales keep full, non-task-scoped access.
+stockRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
   const { skuId, locationId } = req.query;
   const items = await prisma.stockItem.findMany({
     where: {
@@ -90,7 +94,7 @@ stockRouter.get("/", async (req, res) => {
 });
 
 // "Where is SKU X right now" — the direct fix for pain point #2.
-stockRouter.get("/sku/:skuId/locations", async (req, res) => {
+stockRouter.get("/sku/:skuId/locations", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
   const items = await prisma.stockItem.findMany({
     where: { skuId: req.params.skuId, quantity: { gt: 0 } },
     include: { location: true, batch: true },
@@ -99,7 +103,7 @@ stockRouter.get("/sku/:skuId/locations", async (req, res) => {
   res.json(items);
 });
 
-stockRouter.get("/low-stock", async (_req, res) => {
+stockRouter.get("/low-stock", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {
   const skus = await prisma.sku.findMany({ where: { active: true }, include: { stockItems: true } });
   const lowStock = skus
     .map((sku) => ({
@@ -110,7 +114,7 @@ stockRouter.get("/low-stock", async (_req, res) => {
   res.json(lowStock.map(({ sku, totalQty }) => ({ id: sku.id, code: sku.code, name: sku.name, reorderThreshold: sku.reorderThreshold, totalQty })));
 });
 
-stockRouter.get("/movements", async (req, res) => {
+stockRouter.get("/movements", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
   const { skuId, locationId, type, limit } = req.query;
   const movements = await prisma.stockMovement.findMany({
     where: {
@@ -149,7 +153,7 @@ const putawaySchema = z.object({
   reason: z.string().optional(),
 });
 
-stockRouter.post("/putaway", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+stockRouter.post("/putaway", requireScanAccess, async (req: AuthedRequest, res) => {
   const parsed = putawaySchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -188,7 +192,7 @@ const transferSchema = z.object({
   reason: z.string().optional(),
 });
 
-stockRouter.post("/transfer", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+stockRouter.post("/transfer", requireScanAccess, async (req: AuthedRequest, res) => {
   const parsed = transferSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });

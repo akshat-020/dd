@@ -35,12 +35,12 @@ authRouter.post("/login", async (req, res) => {
   const token = signToken({ sub: user.id, role: user.role, name: user.name });
   res.json({
     token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, canScanPutaway: user.canScanPutaway },
   });
 });
 
 authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
   if (!user) return res.status(404).json({ error: "User not found" });
-  res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
+  res.json({ id: user.id, name: user.name, email: user.email, role: user.role, canScanPutaway: user.canScanPutaway });
 });

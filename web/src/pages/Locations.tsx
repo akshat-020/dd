@@ -4,6 +4,76 @@ import { useAuth } from "../auth/AuthContext";
 import type { Location } from "../api/types";
 
 export default function LocationsPage() {
+  const { user } = useAuth();
+  // Warehouse's visibility is task-scoped (see the permission model): no
+  // general location browsing, only the standalone lookup-by-code search.
+  // This applies to the WAREHOUSE role specifically, never to a Sales
+  // account even if it's been granted scan access — that grant only adds
+  // scan actions, it never narrows Sales' normal full visibility.
+  if (user?.role === "WAREHOUSE") {
+    return <LocationLookupOnly />;
+  }
+  return <LocationsFullView />;
+}
+
+function LocationLookupOnly() {
+  const [code, setCode] = useState("");
+  const [result, setResult] = useState<Location | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    if (!code.trim()) return;
+    setSearching(true);
+    setError(null);
+    setResult(null);
+    try {
+      const loc = await api.get<Location>(`/locations/by-code/${encodeURIComponent(code.trim())}`);
+      setResult(loc);
+    } catch {
+      setError(`No location found for code "${code.trim()}"`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-md space-y-4">
+      <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">Location Lookup</h1>
+      <p className="text-sm text-slate-500 dark:text-slate-400">
+        Look up a single location by its code. General stock/location browsing isn't available on
+        this account — use your assigned pick list or putaway task for that.
+      </p>
+
+      <form onSubmit={handleSearch} className="flex gap-2">
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="e.g. A-03-02"
+          className="flex-1 rounded-lg border border-slate-300 px-3 py-3 font-mono outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        />
+        <button type="submit" disabled={searching} className="rounded-lg bg-slate-900 px-4 py-3 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
+          {searching ? "…" : "Search"}
+        </button>
+      </form>
+
+      {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p>}
+
+      {result && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+          <div className="font-mono text-lg font-bold text-slate-900 dark:text-slate-50">{result.code}</div>
+          <div className="text-sm text-slate-500 dark:text-slate-400">
+            Zone {result.zone} · Rack {result.rack}
+            {result.bin ? ` · Bin ${result.bin}` : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LocationsFullView() {
   const { hasRole } = useAuth();
   const canEdit = hasRole("OWNER", "ACCOUNTANT", "WAREHOUSE");
   const [locations, setLocations] = useState<Location[]>([]);

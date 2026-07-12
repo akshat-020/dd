@@ -7,7 +7,8 @@ export const reportsRouter = Router();
 reportsRouter.use(requireAuth);
 
 // Stock-on-hand by SKU and by location, at the current point in time.
-reportsRouter.get("/stock-on-hand", async (req, res) => {
+// General inventory browsing — excluded from Warehouse's task-scoped view.
+reportsRouter.get("/stock-on-hand", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
   const items = await prisma.stockItem.findMany({
     where: { quantity: { gt: 0 } },
     include: { sku: true, location: true },

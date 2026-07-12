@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { api, ApiError, qrImageUrl } from "../api/client";
 import type { Location, Sku, SkuBatch } from "../api/types";
 import { QrScannerModal } from "../components/QrScannerModal";
+import { useAuth } from "../auth/AuthContext";
 
 type ScannerTarget = "location" | "sku" | null;
 
 export default function Receiving() {
+  const { hasScanAccess } = useAuth();
   const [skus, setSkus] = useState<Sku[]>([]);
   const [skuId, setSkuId] = useState("");
   const [sourceType, setSourceType] = useState<"PURCHASE" | "PRODUCTION">("PURCHASE");
@@ -59,9 +61,14 @@ export default function Receiving() {
   function handleScanSkuLabel(text: string) {
     setScannerTarget(null);
     if (!batch || !activeSku) return;
+    // A camera scan yields the full encoded label ("SKU:x|BATCH:y|DATE:z"),
+    // so both SKU and batch are checked. Manual entry realistically only
+    // ever contains the bare SKU code (no one types the batch code from
+    // memory), so fall back to a SKU-only check in that case.
     const skuMatch = /SKU:([^|]+)/.exec(text);
     const batchMatch = /BATCH:([^|]+)/.exec(text);
-    if (skuMatch?.[1] !== activeSku.code || batchMatch?.[1] !== batch.batchCode) {
+    const scannedSku = skuMatch ? skuMatch[1] : text;
+    if (scannedSku !== activeSku.code || (skuMatch && batchMatch?.[1] !== batch.batchCode)) {
       setError("Scanned label doesn't match the batch you're putting away.");
       return;
     }
@@ -148,44 +155,51 @@ export default function Receiving() {
             </button>
           </div>
 
-          <form onSubmit={handlePutaway} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">2. Assign to a location</h2>
+          {hasScanAccess ? (
+            <form onSubmit={handlePutaway} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">2. Assign to a location</h2>
 
-            <button
-              type="button"
-              onClick={() => setScannerTarget("location")}
-              className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium dark:border-slate-700"
-            >
-              {location ? `Location: ${location.code} (rescan)` : "Scan destination location"}
-            </button>
-
-            {location && (
               <button
                 type="button"
-                onClick={() => setScannerTarget("sku")}
+                onClick={() => setScannerTarget("location")}
                 className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium dark:border-slate-700"
               >
-                {skuLabelConfirmed ? "Item label confirmed ✓" : "Scan item label to confirm"}
+                {location ? `Location: ${location.code} (rescan)` : "Scan destination location"}
               </button>
-            )}
 
-            {location && skuLabelConfirmed && (
-              <>
-                <input
-                  type="number"
-                  min={1}
-                  required
-                  value={qty}
-                  onChange={(e) => setQty(e.target.value)}
-                  placeholder="Quantity"
-                  className="w-full rounded-lg border border-slate-300 px-4 py-3 text-center text-xl font-bold outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                />
-                <button type="submit" disabled={submitting} className="w-full rounded-lg bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-50">
-                  {submitting ? "Saving…" : "Confirm putaway"}
+              {location && (
+                <button
+                  type="button"
+                  onClick={() => setScannerTarget("sku")}
+                  className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium dark:border-slate-700"
+                >
+                  {skuLabelConfirmed ? "Item label confirmed ✓" : "Scan item label to confirm"}
                 </button>
-              </>
-            )}
-          </form>
+              )}
+
+              {location && skuLabelConfirmed && (
+                <>
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    value={qty}
+                    onChange={(e) => setQty(e.target.value)}
+                    placeholder="Quantity"
+                    className="w-full rounded-lg border border-slate-300 px-4 py-3 text-center text-xl font-bold outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <button type="submit" disabled={submitting} className="w-full rounded-lg bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-50">
+                    {submitting ? "Saving…" : "Confirm putaway"}
+                  </button>
+                </>
+              )}
+            </form>
+          ) : (
+            <p className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+              Batch logged and labeled. Placing it into a location requires the scan-based putaway
+              permission — hand the printed label to a warehouse team member to shelve it.
+            </p>
+          )}
         </div>
       )}
 
