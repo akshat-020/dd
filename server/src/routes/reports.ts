@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { decryptNumber } from "../lib/crypto.js";
+import { verifyAuditChain } from "../lib/audit.js";
 
 export const reportsRouter = Router();
 
@@ -71,17 +73,20 @@ reportsRouter.get("/sales", requireRole("OWNER", "ACCOUNTANT"), async (req, res)
     include: { sku: true, invoiceReference: { include: { order: true } } },
   });
   res.json(
-    lines.map((l) => ({
-      skuId: l.skuId,
-      skuCode: l.sku.code,
-      skuName: l.sku.name,
-      buyerName: l.invoiceReference.order.buyerName,
-      qty: l.qty,
-      price: l.price,
-      value: l.qty * l.price,
-      invoiceDate: l.invoiceReference.date,
-      tallyInvoiceNumber: l.invoiceReference.tallyInvoiceNumber,
-    }))
+    lines.map((l) => {
+      const price = decryptNumber(l.price);
+      return {
+        skuId: l.skuId,
+        skuCode: l.sku.code,
+        skuName: l.sku.name,
+        buyerName: l.invoiceReference.order.buyerName,
+        qty: l.qty,
+        price,
+        value: l.qty * price,
+        invoiceDate: l.invoiceReference.date,
+        tallyInvoiceNumber: l.invoiceReference.tallyInvoiceNumber,
+      };
+    })
   );
 });
 
@@ -97,4 +102,12 @@ reportsRouter.get("/audit-log", requireRole("OWNER", "ACCOUNTANT"), async (req: 
     take: typeof limit === "string" ? Math.min(Number(limit) || 200, 1000) : 200,
   });
   res.json(logs);
+});
+
+// Recomputes the tamper-evident hash chain and reports whether it's intact
+// — lets an Owner periodically confirm the audit trail hasn't been altered
+// by anything other than this application's own append-only writes.
+reportsRouter.get("/audit-log/verify", requireRole("OWNER"), async (_req, res) => {
+  const result = await verifyAuditChain();
+  res.json(result);
 });

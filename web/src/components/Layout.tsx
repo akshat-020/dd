@@ -9,6 +9,8 @@ interface NavItem {
   // Also visible to a Sales account with the granted scan permission, even
   // though "SALES" isn't in `roles`.
   scanGated?: boolean;
+  // Same idea for the inward-entry permission.
+  inwardGated?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -16,17 +18,23 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/orders", label: "Orders" },
   { to: "/orders/new", label: "New Order", roles: ["OWNER", "SALES"] },
   { to: "/picking", label: "Picking", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
-  { to: "/receiving", label: "Receiving", roles: ["OWNER", "ACCOUNTANT", "WAREHOUSE"], scanGated: true },
+  { to: "/receiving", label: "Receiving", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
   { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },
+  { to: "/security", label: "Security" },
 ];
 
 export default function Layout() {
-  const { user, logout, hasRole, hasScanAccess } = useAuth();
-  const visibleItems = NAV_ITEMS.filter((item) => (!item.roles || hasRole(...item.roles)) || (item.scanGated && hasScanAccess));
+  const { user, logout, hasRole, hasScanAccess, hasInwardEntryAccess } = useAuth();
+  const visibleItems = NAV_ITEMS.filter(
+    (item) =>
+      (!item.roles || hasRole(...item.roles)) ||
+      (item.scanGated && hasScanAccess) ||
+      (item.inwardGated && hasInwardEntryAccess)
+  );
 
   return (
     <div className="flex min-h-full flex-col bg-slate-50 dark:bg-slate-950">

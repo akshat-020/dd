@@ -49,6 +49,12 @@ export default function Users() {
     load();
   }
 
+  // Same pattern for inward-entry access (defaults on for Sales, revocable).
+  async function toggleInwardEntryAccess(user: User) {
+    await api.patch(`/users/${user.id}`, { canLogInwardEntry: !user.canLogInwardEntry });
+    load();
+  }
+
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <div className="flex items-center justify-between">
@@ -107,24 +113,37 @@ export default function Users() {
 
       <ul className="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
         {users.map((u) => (
-          <li key={u.id} className="flex items-center justify-between gap-3 px-4 py-3">
+          <li key={u.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
             <div>
               <div className="font-medium text-slate-900 dark:text-slate-50">{u.name}</div>
               <div className="text-xs text-slate-500 dark:text-slate-400">{u.email} · {u.role}</div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {u.role === "SALES" && (
-                <button
-                  onClick={() => toggleScanAccess(u)}
-                  title="Scan-based putaway/pick — an add-on permission, not a role"
-                  className={`rounded-full px-3 py-1 text-xs font-medium ${
-                    u.canScanPutaway
-                      ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                      : "bg-slate-100 text-slate-500 dark:bg-slate-800"
-                  }`}
-                >
-                  Scan access: {u.canScanPutaway ? "On" : "Off"}
-                </button>
+                <>
+                  <button
+                    onClick={() => toggleScanAccess(u)}
+                    title="Scan-based putaway/pick — an add-on permission, not a role"
+                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                      u.canScanPutaway
+                        ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                        : "bg-slate-100 text-slate-500 dark:bg-slate-800"
+                    }`}
+                  >
+                    Scan access: {u.canScanPutaway ? "On" : "Off"}
+                  </button>
+                  <button
+                    onClick={() => toggleInwardEntryAccess(u)}
+                    title="Log inward stock entries — on by default for Sales, revocable"
+                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                      u.canLogInwardEntry
+                        ? "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                        : "bg-slate-100 text-slate-500 dark:bg-slate-800"
+                    }`}
+                  >
+                    Inward entry: {u.canLogInwardEntry ? "On" : "Off"}
+                  </button>
+                </>
               )}
               <button
                 onClick={() => toggleActive(u)}

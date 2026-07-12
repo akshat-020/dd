@@ -50,7 +50,14 @@ async function main() {
   const batch = await prisma.skuBatch.upsert({
     where: { skuId_batchCode: { skuId: skus[0].id, batchCode: "SEED-BATCH-1" } },
     update: {},
-    create: { skuId: skus[0].id, batchCode: "SEED-BATCH-1", sourceType: "PURCHASE", note: "Initial seed stock" },
+    create: {
+      skuId: skus[0].id,
+      batchCode: "SEED-BATCH-1",
+      sourceType: "PURCHASE",
+      receivedQuantity: 200,
+      supplierRef: "SEED-PO-1",
+      note: "Initial seed stock",
+    },
   });
 
   const existingStock = await prisma.stockItem.findFirst({

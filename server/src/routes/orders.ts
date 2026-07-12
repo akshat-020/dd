@@ -4,6 +4,8 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { PRICE_VISIBLE_ROLES } from "../lib/roles.js";
+import { decryptNumber } from "../lib/crypto.js";
+import { getCommittedQuantities } from "../lib/stock.js";
 
 export const ordersRouter = Router();
 
@@ -11,6 +13,15 @@ ordersRouter.use(requireAuth);
 
 function canSeePrice(role: string) {
   return (PRICE_VISIBLE_ROLES as string[]).includes(role);
+}
+
+// A DRAFT order is a not-yet-committed conversation with a buyer — visible
+// only to whoever created it (plus Owner, consistent with Owner's
+// unrestricted access everywhere else). Once finalized it's no longer a
+// private draft, so every other role's existing access resumes as before.
+function canAccessOrder(user: { id: string; role: string }, order: { status: string; createdById: string }) {
+  if (order.status !== "DRAFT") return true;
+  return user.role === "OWNER" || order.createdById === user.id;
 }
 
 async function serializeOrder(orderId: string, includePrice: boolean) {
@@ -31,19 +42,35 @@ async function serializeOrder(orderId: string, includePrice: boolean) {
     ...order,
     lines: order.lines.map((line: any) => {
       const { price, ...rest } = line;
-      return includePrice ? { ...rest, unitPrice: price?.unitPrice ?? null } : rest;
+      return includePrice ? { ...rest, unitPrice: price ? decryptNumber(price.unitPrice) : null } : rest;
     }),
   };
 }
 
 ordersRouter.get("/", async (req: AuthedRequest, res) => {
   const { status } = req.query;
+  const { id: userId, role } = req.user!;
+
+  // Draft orders are scoped to their creator (+ Owner) at the query level,
+  // not filtered out afterward — see canAccessOrder above.
+  const statusFilter = typeof status === "string" ? status : undefined;
+  let where: Record<string, unknown>;
+  if (role === "OWNER") {
+    where = statusFilter ? { status: statusFilter } : {};
+  } else if (statusFilter === "DRAFT") {
+    where = { status: "DRAFT", createdById: userId };
+  } else if (statusFilter) {
+    where = { status: statusFilter };
+  } else {
+    where = { OR: [{ status: { not: "DRAFT" } }, { createdById: userId }] };
+  }
+
   const orders = await prisma.order.findMany({
-    where: typeof status === "string" ? { status } : undefined,
+    where,
     include: { createdBy: { select: { id: true, name: true } }, lines: { include: { sku: true } } },
     orderBy: { createdAt: "desc" },
   });
-  const includePrice = canSeePrice(req.user!.role);
+  const includePrice = canSeePrice(role);
   const serialized = includePrice
     ? await Promise.all(orders.map((o) => serializeOrder(o.id, true)))
     : orders.map((o) => ({ ...o, lines: o.lines.map(({ ...l }) => l) }));
@@ -51,8 +78,9 @@ ordersRouter.get("/", async (req: AuthedRequest, res) => {
 });
 
 ordersRouter.get("/:id", async (req: AuthedRequest, res) => {
+  const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
+  if (!raw || !canAccessOrder(req.user!, raw)) return res.status(404).json({ error: "Order not found" });
   const order = await serializeOrder(req.params.id, canSeePrice(req.user!.role));
-  if (!order) return res.status(404).json({ error: "Order not found" });
   res.json(order);
 });
 
@@ -90,28 +118,40 @@ ordersRouter.post("/", requireRole("OWNER", "SALES"), async (req: AuthedRequest,
   res.status(201).json(order);
 });
 
-// Live stock availability check for every line on a draft order — this is
-// the fix for pain point #1 (no real-time visibility at order-taking time).
-ordersRouter.get("/:id/stock-check", async (req, res) => {
+// Live stock availability check for every line on a draft order. `available`
+// is on-hand stock minus whatever's already committed to *other* orders
+// (other open drafts' requested qty, other finalized-but-not-yet-picked
+// orders' pick-list qty) — checking against raw on-hand alone lets two
+// orders both get told a SKU is available when there's really only enough
+// for one (see getCommittedQuantities in lib/stock.ts).
+ordersRouter.get("/:id/stock-check", async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: { include: { sku: true } } } });
   if (!order) return res.status(404).json({ error: "Order not found" });
+  if (!canAccessOrder(req.user!, order)) return res.status(404).json({ error: "Order not found" });
 
-  const results = await Promise.all(
-    order.lines.map(async (line) => {
-      const agg = await prisma.stockItem.aggregate({ where: { skuId: line.skuId }, _sum: { quantity: true } });
-      const available = agg._sum.quantity ?? 0;
-      const requested = line.qtyFinalized ?? line.qtyRequested;
-      return {
-        lineId: line.id,
-        skuId: line.skuId,
-        skuCode: line.sku.code,
-        skuName: line.sku.name,
-        requested,
-        available,
-        sufficient: available >= requested,
-      };
-    })
-  );
+  const skuIds = order.lines.map((l) => l.skuId);
+  const [stockAgg, committed] = await Promise.all([
+    prisma.stockItem.groupBy({ by: ["skuId"], where: { skuId: { in: skuIds } }, _sum: { quantity: true } }),
+    getCommittedQuantities(prisma, skuIds, order.id),
+  ]);
+  const onHandBySku = new Map(stockAgg.map((g) => [g.skuId, g._sum.quantity ?? 0]));
+
+  const results = order.lines.map((line) => {
+    const onHand = onHandBySku.get(line.skuId) ?? 0;
+    const committedElsewhere = committed.get(line.skuId) ?? 0;
+    const available = Math.max(onHand - committedElsewhere, 0);
+    const requested = line.qtyFinalized ?? line.qtyRequested;
+    return {
+      lineId: line.id,
+      skuId: line.skuId,
+      skuCode: line.sku.code,
+      skuName: line.sku.name,
+      requested,
+      available,
+      committedElsewhere,
+      sufficient: available >= requested,
+    };
+  });
   res.json(results);
 });
 
@@ -141,7 +181,7 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
   }
   const before = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
-  if (!before) return res.status(404).json({ error: "Order not found" });
+  if (!before || !canAccessOrder(req.user!, before)) return res.status(404).json({ error: "Order not found" });
   if (before.status !== "DRAFT") {
     return res.status(409).json({ error: "Only draft orders can be edited" });
   }
@@ -175,7 +215,7 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
 // pick list grouped/sequenced by location for the loading team.
 ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
-  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (!order || !canAccessOrder(req.user!, order)) return res.status(404).json({ error: "Order not found" });
   if (order.status !== "DRAFT") {
     return res.status(409).json({ error: "Only draft orders can be finalized" });
   }
@@ -184,6 +224,17 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
 
   const result = await prisma.$transaction(async (tx) => {
     const pickListRows: { skuId: string; locationId: string; batchId: string | null; qty: number }[] = [];
+    // Same commitment accounting as the stock-check endpoint — without this,
+    // two orders finalizing around the same time could each see the full
+    // physical on-hand quantity and both succeed, oversubscribing the same
+    // stock (finalize only *allocates* to specific bins; the actual
+    // StockItem deduction doesn't happen until the physical pick-confirm
+    // scan, so on-hand alone isn't the truth at this point).
+    const committed = await getCommittedQuantities(
+      tx,
+      order.lines.map((l) => l.skuId),
+      order.id
+    );
 
     for (const line of order.lines) {
       const qty = line.qtyFinalized ?? line.qtyRequested;
@@ -194,9 +245,11 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
         where: { skuId: line.skuId, quantity: { gt: 0 } },
         orderBy: { quantity: "desc" },
       });
-      const totalAvailable = stockItems.reduce((sum, s) => sum + s.quantity, 0);
-      if (totalAvailable < qty) {
-        shortfalls.push({ skuId: line.skuId, requested: qty, available: totalAvailable });
+      const totalOnHand = stockItems.reduce((sum, s) => sum + s.quantity, 0);
+      const committedElsewhere = committed.get(line.skuId) ?? 0;
+      const trulyAvailable = totalOnHand - committedElsewhere;
+      if (trulyAvailable < qty) {
+        shortfalls.push({ skuId: line.skuId, requested: qty, available: Math.max(trulyAvailable, 0) });
         continue;
       }
 

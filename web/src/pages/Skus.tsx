@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, ApiError, qrImageUrl } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import type { Sku, SkuBatch, StockSummaryEntry } from "../api/types";
+import type { PurchaseCostReference, Sku, SkuBatch, StockSummaryEntry } from "../api/types";
 
 export default function SkusPage() {
   const { hasRole } = useAuth();
@@ -124,6 +124,8 @@ export default function SkusPage() {
                 expanded={expandedId === s.id}
                 onToggle={() => setExpandedId(expandedId === s.id ? null : s.id)}
                 canSeeStock={canSeeStock}
+                canEdit={canEdit}
+                onSaved={load}
               />
             ))}
           </tbody>
@@ -140,30 +142,36 @@ function SkuRow({
   expanded,
   onToggle,
   canSeeStock,
+  canEdit,
+  onSaved,
 }: {
   sku: Sku;
   qty: number | null;
   expanded: boolean;
   onToggle: () => void;
   canSeeStock: boolean;
+  canEdit: boolean;
+  onSaved: () => void;
 }) {
+  const canExpand = canSeeStock || canEdit;
   return (
     <>
-      <tr onClick={canSeeStock ? onToggle : undefined} className={canSeeStock ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}>
+      <tr onClick={canExpand ? onToggle : undefined} className={canExpand ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}>
         <td className="px-4 py-2 font-mono text-xs">{sku.code}</td>
         <td className="px-4 py-2 text-slate-900 dark:text-slate-50">{sku.name}</td>
         <td className="px-4 py-2">{sku.unit}</td>
         <td className="px-4 py-2">{sku.category ?? "—"}</td>
         {canSeeStock && (
           <td className={`px-4 py-2 ${qty !== null && qty <= sku.reorderThreshold ? "text-red-600 dark:text-red-400" : ""}`}>
-            {qty} {expanded ? "▲" : "▼"}
+            {qty} {canExpand && (expanded ? "▲" : "▼")}
           </td>
         )}
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={5} className="bg-slate-50 px-4 py-3 dark:bg-slate-800">
-            <BatchHistory skuId={sku.id} skuCode={sku.code} />
+          <td colSpan={canSeeStock ? 5 : 4} className="bg-slate-50 px-4 py-3 dark:bg-slate-800">
+            {canEdit && <SkuEditForm sku={sku} onSaved={onSaved} />}
+            {canSeeStock && <BatchHistory skuId={sku.id} skuCode={sku.code} />}
           </td>
         </tr>
       )}
@@ -171,7 +179,90 @@ function SkuRow({
   );
 }
 
+function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    name: sku.name,
+    unit: sku.unit,
+    category: sku.category ?? "",
+    reorderThreshold: String(sku.reorderThreshold),
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.patch(`/skus/${sku.id}`, {
+        name: form.name,
+        unit: form.unit,
+        category: form.category || undefined,
+        reorderThreshold: Number(form.reorderThreshold) || 0,
+      });
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save changes");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        className="mb-3 text-xs font-medium text-blue-600 underline dark:text-blue-400"
+      >
+        Edit SKU details
+      </button>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSave} onClick={(e) => e.stopPropagation()} className="mb-3 space-y-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
+      <p className="text-xs text-slate-400">Code {sku.code} can't be changed — it's what QR labels and stock history reference.</p>
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} required />
+        <Field label="Unit" value={form.unit} onChange={(v) => setForm({ ...form, unit: v })} required />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Category" value={form.category} onChange={(v) => setForm({ ...form, category: v })} />
+        <Field label="Reorder threshold" type="number" value={form.reorderThreshold} onChange={(v) => setForm({ ...form, reorderThreshold: v })} />
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={submitting}
+          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+        >
+          {submitting ? "Saving…" : "Save changes"}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setEditing(false);
+          }}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function BatchHistory({ skuId, skuCode }: { skuId: string; skuCode: string }) {
+  const { hasRole } = useAuth();
+  const canSeeCost = hasRole("OWNER", "ACCOUNTANT");
   const [batches, setBatches] = useState<SkuBatch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -193,13 +284,112 @@ function BatchHistory({ skuId, skuCode }: { skuId: string; skuCode: string }) {
       </button>
       <div className="flex flex-wrap gap-3">
         {batches.map((b) => (
-          <div key={b.id} className="flex flex-col items-center rounded-lg border border-slate-200 bg-white p-2 text-center dark:border-slate-700 dark:bg-slate-900">
-            <img src={qrImageUrl("batch", b.id)} alt={b.batchCode} className="h-20 w-20" />
-            <span className="mt-1 font-mono text-xs font-semibold">{b.batchCode}</span>
-            <span className="text-xs text-slate-400">{new Date(b.receivedDate).toLocaleDateString()} · {b.sourceType}</span>
-          </div>
+          <BatchCard key={b.id} batch={b} canSeeCost={canSeeCost} />
         ))}
       </div>
+    </div>
+  );
+}
+
+function BatchCard({ batch, canSeeCost }: { batch: SkuBatch; canSeeCost: boolean }) {
+  const [showCost, setShowCost] = useState(false);
+
+  return (
+    <div className="flex w-40 flex-col items-center rounded-lg border border-slate-200 bg-white p-2 text-center dark:border-slate-700 dark:bg-slate-900">
+      <img src={qrImageUrl("batch", batch.id)} alt={batch.batchCode} className="h-20 w-20" />
+      <span className="mt-1 font-mono text-xs font-semibold">{batch.batchCode}</span>
+      <span className="text-xs text-slate-400">
+        {new Date(batch.receivedDate).toLocaleDateString()} · {batch.sourceType}
+      </span>
+      {batch.receivedQuantity != null && <span className="text-xs text-slate-400">Qty: {batch.receivedQuantity}</span>}
+      {batch.supplierRef && <span className="text-xs text-slate-400">Ref: {batch.supplierRef}</span>}
+      {canSeeCost && (
+        <button onClick={() => setShowCost((v) => !v)} className="mt-1 text-xs font-medium text-blue-600 underline dark:text-blue-400">
+          {showCost ? "Hide cost" : "Cost"}
+        </button>
+      )}
+      {showCost && <CostReferencePanel batchId={batch.id} />}
+    </div>
+  );
+}
+
+function CostReferencePanel({ batchId }: { batchId: string }) {
+  const [refs, setRefs] = useState<PurchaseCostReference[] | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ quantity: "", unitCost: "", supplierRef: "", note: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  function load() {
+    api
+      .get<PurchaseCostReference[]>(`/stock/batches/${batchId}/cost-references`)
+      .then(setRefs)
+      .catch((e) => setError(e.message));
+  }
+
+  useEffect(load, [batchId]);
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.post(`/stock/batches/${batchId}/cost-references`, {
+        quantity: Number(form.quantity),
+        unitCost: Number(form.unitCost),
+        supplierRef: form.supplierRef || undefined,
+        note: form.note || undefined,
+      });
+      setForm({ quantity: "", unitCost: "", supplierRef: "", note: "" });
+      setShowForm(false);
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to add cost reference");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-1 w-full space-y-1 border-t border-slate-100 pt-1 text-left dark:border-slate-800">
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      {refs?.map((r) => (
+        <div key={r.id} className="text-xs text-slate-500 dark:text-slate-400">
+          {r.quantity} × ₹{r.unitCost} = ₹{(r.quantity * r.unitCost).toFixed(2)}
+          {r.supplierRef ? ` (${r.supplierRef})` : ""}
+        </div>
+      ))}
+      {refs?.length === 0 && !showForm && <p className="text-xs text-slate-400">No cost recorded yet.</p>}
+      {!showForm ? (
+        <button onClick={() => setShowForm(true)} className="text-xs font-medium text-slate-500 underline dark:text-slate-400">
+          + Add cost
+        </button>
+      ) : (
+        <form onSubmit={handleAdd} className="space-y-1">
+          <input
+            type="number"
+            min={1}
+            required
+            placeholder="Qty"
+            value={form.quantity}
+            onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800"
+          />
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            required
+            placeholder="Unit cost"
+            value={form.unitCost}
+            onChange={(e) => setForm({ ...form, unitCost: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800"
+          />
+          <button type="submit" disabled={submitting} className="w-full rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
+            {submitting ? "Saving…" : "Save"}
+          </button>
+        </form>
+      )}
     </div>
   );
 }

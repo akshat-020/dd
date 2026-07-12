@@ -9,6 +9,20 @@ export interface User {
   // Composable add-on permission, only meaningful for SALES accounts —
   // Owner/Warehouse always have scan access regardless of this flag.
   canScanPutaway?: boolean;
+  // Composable permission, only meaningful for SALES accounts — defaults to
+  // true for them server-side. Owner always has it; Accountant/Warehouse
+  // never do regardless of this flag.
+  canLogInwardEntry?: boolean;
+  totpEnabled?: boolean;
+}
+
+export interface Session {
+  id: string;
+  userAgent?: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  current?: boolean;
+  user?: { id: string; name: string; email: string; role: Role };
 }
 
 export interface Sku {
@@ -35,8 +49,21 @@ export interface SkuBatch {
   skuId: string;
   batchCode: string;
   sourceType: "PURCHASE" | "PRODUCTION";
+  receivedQuantity?: number | null;
+  supplierRef?: string | null;
   receivedDate: string;
   note?: string | null;
+  sku?: Sku;
+}
+
+export interface PurchaseCostReference {
+  id: string;
+  batchId: string;
+  quantity: number;
+  unitCost: number;
+  supplierRef?: string | null;
+  note?: string | null;
+  createdAt: string;
 }
 
 export interface StockItem {
@@ -99,12 +126,15 @@ export interface StockCheckResult {
   skuName: string;
   requested: number;
   available: number;
+  committedElsewhere: number;
   sufficient: boolean;
 }
 
 export interface StockSummaryEntry {
   skuId: string;
   totalQty: number;
+  committedQty: number;
+  availableQty: number;
 }
 
 export interface PickListItem {

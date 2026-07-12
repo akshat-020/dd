@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, requireScanAccess, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireRole, requireScanAccess, requireInwardEntryAccess, type AuthedRequest } from "../middleware/auth.js";
+import { canUseScanActions, canLogInwardEntry } from "../lib/permissions.js";
+import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateQrPngBuffer, generateQrSvg, encodeSkuBatchLabel } from "../lib/qr.js";
-import { applyStockMovement, InsufficientStockError } from "../lib/stock.js";
+import { applyStockMovement, getCommittedQuantities, InsufficientStockError } from "../lib/stock.js";
 
 export const stockRouter = Router();
 
@@ -16,13 +18,18 @@ const createBatchSchema = z.object({
   skuId: z.string().min(1),
   batchCode: z.string().min(1).optional(),
   sourceType: z.enum(["PURCHASE", "PRODUCTION"]),
+  receivedQuantity: z.number().int().positive(),
+  supplierRef: z.string().optional(),
   note: z.string().optional(),
 });
 
-// Logged at the moment of purchase/production receipt. Auto-generates a
-// batch code if the caller doesn't supply one, so a warehouse worker can
-// just tap "Receive" without typing.
-stockRouter.post("/batches", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+// The "inward entry" — SKU, qty, supplier/batch ref, date. Logging this is
+// what triggers SKU label printing and starts the batch on its way to being
+// shelved. Deliberately separate from what it cost (PurchaseCostReference,
+// below) — same physical-event/cost-event split as Order vs.
+// InvoiceReference on the sales side. Auto-generates a batch code if the
+// caller doesn't supply one.
+stockRouter.post("/batches", requireInwardEntryAccess, async (req: AuthedRequest, res) => {
   const parsed = createBatchSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -33,10 +40,34 @@ stockRouter.post("/batches", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), as
   const batchCode = parsed.data.batchCode ?? `${new Date().toISOString().slice(0, 10)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
   const batch = await prisma.skuBatch.create({
-    data: { skuId: parsed.data.skuId, batchCode, sourceType: parsed.data.sourceType, note: parsed.data.note },
+    data: {
+      skuId: parsed.data.skuId,
+      batchCode,
+      sourceType: parsed.data.sourceType,
+      receivedQuantity: parsed.data.receivedQuantity,
+      supplierRef: parsed.data.supplierRef,
+      note: parsed.data.note,
+    },
   });
   await recordAudit({ userId: req.user!.id, action: "CREATE", entityType: "SkuBatch", entityId: batch.id, after: batch });
   res.status(201).json(batch);
+});
+
+// Recently logged batches across all SKUs — lets someone with putaway
+// access (typically Warehouse, who can't log inward entries themselves)
+// find a batch that Owner/Sales already logged and shelve it, without
+// needing to know which SKU to look under.
+stockRouter.get("/batches/recent", async (req: AuthedRequest, res) => {
+  const { role, id: userId } = req.user!;
+  const allowed = role === "OWNER" || (await canUseScanActions(userId, role)) || (await canLogInwardEntry(userId, role));
+  if (!allowed) return res.status(403).json({ error: "Forbidden" });
+
+  const batches = await prisma.skuBatch.findMany({
+    include: { sku: true },
+    orderBy: { receivedDate: "desc" },
+    take: 50,
+  });
+  res.json(batches);
 });
 
 // Batch/QR history for a SKU — lets Owner/Accountant/Sales view or reprint
@@ -70,6 +101,47 @@ stockRouter.get("/batches/:id/qr", async (req, res) => {
     return;
   }
   res.type("image/png").send(await generateQrPngBuffer(label));
+});
+
+// ---- Purchase cost references (the financial counterpart to a batch) ----
+// Owner + Accountant only, mirroring Invoice Reference on the sales side —
+// floor-level receiving staff never see or enter what goods cost.
+
+const createCostReferenceSchema = z.object({
+  quantity: z.number().int().positive(),
+  unitCost: z.number().nonnegative(),
+  supplierRef: z.string().optional(),
+  note: z.string().optional(),
+});
+
+stockRouter.post("/batches/:id/cost-references", requireRole("OWNER", "ACCOUNTANT"), async (req: AuthedRequest, res) => {
+  const parsed = createCostReferenceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
+  }
+  const batch = await prisma.skuBatch.findUnique({ where: { id: req.params.id } });
+  if (!batch) return res.status(404).json({ error: "Batch not found" });
+
+  const ref = await prisma.purchaseCostReference.create({
+    data: {
+      batchId: batch.id,
+      quantity: parsed.data.quantity,
+      unitCost: encryptNumber(parsed.data.unitCost),
+      supplierRef: parsed.data.supplierRef,
+      note: parsed.data.note,
+      createdById: req.user!.id,
+    },
+  });
+  await recordAudit({ userId: req.user!.id, action: "CREATE", entityType: "PurchaseCostReference", entityId: ref.id, after: ref });
+  res.status(201).json({ ...ref, unitCost: decryptNumber(ref.unitCost) });
+});
+
+stockRouter.get("/batches/:id/cost-references", requireRole("OWNER", "ACCOUNTANT"), async (req, res) => {
+  const refs = await prisma.purchaseCostReference.findMany({
+    where: { batchId: req.params.id },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(refs.map((r) => ({ ...r, unitCost: decryptNumber(r.unitCost) })));
 });
 
 // Resolve a scanned SKU-label QR payload ("SKU:code|BATCH:code|DATE:...")
@@ -119,14 +191,24 @@ stockRouter.get("/sku/:skuId/locations", requireRole("OWNER", "ACCOUNTANT", "SAL
 });
 
 // Total on-hand quantity per SKU across all locations — the "live quantity"
-// column on the SKU master page, and what order intake checks availability
-// against while a line is being composed (see /orders/:id/stock-check for
-// the per-order-line version once a draft exists).
+// column on the SKU master page — plus `availableQty`, which is on-hand
+// minus whatever's already committed to other orders (see
+// getCommittedQuantities). Order intake uses `availableQty` so composing a
+// new order doesn't get told stock is free when it's really already
+// promised elsewhere (see /orders/:id/stock-check for the per-order-line
+// version once a draft exists).
 stockRouter.get("/summary", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {
   const grouped = await prisma.stockItem.groupBy({ by: ["skuId"], _sum: { quantity: true } });
   const totals = new Map(grouped.map((g) => [g.skuId, g._sum.quantity ?? 0]));
   const skus = await prisma.sku.findMany({ where: { active: true }, select: { id: true } });
-  res.json(skus.map((s) => ({ skuId: s.id, totalQty: totals.get(s.id) ?? 0 })));
+  const committed = await getCommittedQuantities(prisma, skus.map((s) => s.id));
+  res.json(
+    skus.map((s) => {
+      const totalQty = totals.get(s.id) ?? 0;
+      const committedQty = committed.get(s.id) ?? 0;
+      return { skuId: s.id, totalQty, committedQty, availableQty: Math.max(totalQty - committedQty, 0) };
+    })
+  );
 });
 
 stockRouter.get("/low-stock", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {

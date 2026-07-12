@@ -3,14 +3,18 @@ generator client {
 }
 
 datasource db {
-  // SQLite for zero-config local dev. Swap to "postgresql" + DATABASE_URL
-  // for production — schema is portable, no SQLite-specific features used.
-  provider = "sqlite"
+  // Postgres in both dev and production (dev via a local instance or the
+  // devcontainer's, production via Neon/Render/etc.) — same engine
+  // everywhere avoids the class of bug where something behaves differently
+  // only in production because dev was running against SQLite.
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// SQLite has no native enum support in Prisma, so roles are validated
-// app-side (see src/lib/roles.ts) against: OWNER | ACCOUNTANT | SALES | WAREHOUSE
+// Role is a plain validated String (see src/lib/roles.ts), not a native
+// Postgres enum — adding a role later is then a code change + no-downtime
+// deploy instead of a blocking ALTER TYPE migration. Valid values: OWNER |
+// ACCOUNTANT | SALES | WAREHOUSE
 model User {
   id           String   @id @default(cuid())
   name         String
@@ -27,11 +31,47 @@ model User {
   // Accountant never does, regardless of this flag. Grantable by Owner only.
   canScanPutaway Boolean @default(false)
 
-  ordersCreated      Order[]            @relation("OrderCreatedBy")
-  stockMovements     StockMovement[]
-  pickListItemsDone  PickListItem[]
-  invoiceRefsCreated InvoiceReference[]
-  auditLogs          AuditLog[]
+  // Composable permission: lets a Sales-staff account log inward stock
+  // entries (SKU + qty + supplier ref + date, triggers label printing).
+  // Defaults to true for Sales (it's part of their normal baseline, not an
+  // opt-in add-on like canScanPutaway) but stays a per-user override so an
+  // Owner can revoke it for a specific person. Meaningless for other
+  // roles — Owner always has it, Accountant/Warehouse never do, regardless
+  // of this flag. The cost/price side of a purchase (PurchaseCostReference)
+  // is a separate, Owner+Accountant-only action — never gated by this flag.
+  canLogInwardEntry Boolean @default(true)
+
+  // Optional TOTP-based 2FA. Recommended (not forced) for Owner/Accountant
+  // since those roles reach pricing/cost data — a compromised password
+  // alone shouldn't be enough. totpSecret is only set once enrollment is
+  // completed (see routes/auth.ts); totpEnabled gates whether login
+  // actually requires the second factor.
+  totpSecret  String?
+  totpEnabled Boolean @default(false)
+
+  ordersCreated            Order[]                 @relation("OrderCreatedBy")
+  stockMovements           StockMovement[]
+  pickListItemsDone        PickListItem[]
+  invoiceRefsCreated       InvoiceReference[]
+  purchaseCostRefsCreated  PurchaseCostReference[]
+  auditLogs                AuditLog[]
+  sessions                 Session[]
+}
+
+// Server-side session record backing each JWT (the token embeds this row's
+// id as `sid`). This is what makes two things possible that a pure
+// stateless JWT can't do on its own: inactivity-based expiry (checked and
+// refreshed on every request) and immediate remote revocation — an Owner
+// can invalidate a lost phone's session right away instead of waiting up
+// to the JWT's absolute expiry.
+model Session {
+  id         String    @id @default(cuid())
+  user       User      @relation(fields: [userId], references: [id])
+  userId     String
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  revokedAt  DateTime?
 }
 
 model Sku {
@@ -52,20 +92,27 @@ model Sku {
   invoiceRefLines InvoiceReferenceLine[]
 }
 
-// A labeled batch/lot of a SKU, created at purchase or production receipt.
-// The QR label printed on the physical goods encodes skuId+batchCode+date.
+// A labeled batch/lot of a SKU, created at purchase or production receipt —
+// this is the "inward entry" (SKU + qty + supplier/batch ref + date). The
+// QR label printed on the physical goods encodes skuId+batchCode+date.
+// What it cost (if a purchase) is recorded separately, later, as one or
+// more PurchaseCostReferences — same physical-event/cost-event split as
+// Order vs. InvoiceReference on the sales side.
 model SkuBatch {
-  id           String   @id @default(cuid())
-  sku          Sku      @relation(fields: [skuId], references: [id])
-  skuId        String
-  batchCode    String
-  sourceType   String // PURCHASE | PRODUCTION
-  receivedDate DateTime @default(now())
-  note         String?
-  createdAt    DateTime @default(now())
+  id                String   @id @default(cuid())
+  sku               Sku      @relation(fields: [skuId], references: [id])
+  skuId             String
+  batchCode         String
+  sourceType        String // PURCHASE | PRODUCTION
+  receivedQuantity  Int? // declared at inward-entry time; null for pre-existing/legacy batches
+  supplierRef       String? // supplier's own PO/invoice/delivery number, distinct from our batchCode
+  receivedDate      DateTime @default(now())
+  note              String?
+  createdAt         DateTime @default(now())
 
-  stockItems     StockItem[]
-  stockMovements StockMovement[]
+  stockItems      StockItem[]
+  stockMovements  StockMovement[]
+  costReferences  PurchaseCostReference[]
 
   @@unique([skuId, batchCode])
 }
@@ -159,7 +206,11 @@ model OrderLinePrice {
   id          String    @id @default(cuid())
   orderLine   OrderLine @relation(fields: [orderLineId], references: [id])
   orderLineId String    @unique
-  unitPrice   Float
+  // Encrypted at rest (AES-256-GCM, see src/lib/crypto.ts) — stored as an
+  // opaque ciphertext string, never a plain numeric column. Encrypted/
+  // decrypted only in the request handler for a role that's already
+  // allowed to see it; it's never queried or aggregated at the SQL level.
+  unitPrice   String
   updatedAt   DateTime  @updatedAt
   updatedById String
 }
@@ -204,17 +255,43 @@ model InvoiceReferenceLine {
   sku                 Sku               @relation(fields: [skuId], references: [id])
   skuId               String
   qty                 Int
-  price               Float
+  // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
+  price               String
 }
 
+// The cost/financial counterpart to a SkuBatch inward entry — mirrors
+// InvoiceReference on the sales side. Logged separately from (and any time
+// after) the inward entry itself, and restricted to Owner+Accountant only,
+// so floor-level receiving staff never see or enter what goods cost.
+model PurchaseCostReference {
+  id          String   @id @default(cuid())
+  batch       SkuBatch @relation(fields: [batchId], references: [id])
+  batchId     String
+  quantity    Int
+  // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
+  unitCost    String
+  supplierRef String?
+  note        String?
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdById String
+  createdAt   DateTime @default(now())
+}
+
+// Append-only by construction — no route anywhere updates or deletes an
+// AuditLog row. hash/previousHash form a tamper-evident chain (each row's
+// hash covers its own content + the prior row's hash) so that even a direct
+// database edit changes the chain and can be detected by recomputing it,
+// not just relying on "no API exists to do it."
 model AuditLog {
-  id         String   @id @default(cuid())
-  user       User     @relation(fields: [userId], references: [id])
-  userId     String
-  action     String
-  entityType String
-  entityId   String
-  before     String?
-  after      String?
-  createdAt  DateTime @default(now())
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [userId], references: [id])
+  userId       String
+  action       String
+  entityType   String
+  entityId     String
+  before       String?
+  after        String?
+  createdAt    DateTime @default(now())
+  previousHash String?
+  hash         String
 }

@@ -97,7 +97,7 @@ export function SkuCombobox({ skus, value, onChange, placeholder = "Search SKU b
                   <span className="font-mono font-semibold">{s.code}</span>
                   <span className="text-slate-500 dark:text-slate-400"> — {s.name}</span>
                 </span>
-                {quantities && <span className="shrink-0 text-xs text-slate-400">{quantities.get(s.id) ?? 0} in stock</span>}
+                {quantities && <span className="shrink-0 text-xs text-slate-400">{quantities.get(s.id) ?? 0} available</span>}
               </button>
             </li>
           ))}

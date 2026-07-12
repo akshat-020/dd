@@ -10,6 +10,10 @@ export interface AuthTokenPayload {
   sub: string;
   role: Role;
   name: string;
+  // Server-side Session row id. This is what makes inactivity-based expiry
+  // and immediate remote revocation possible — a pure stateless JWT can't
+  // do either on its own (see middleware/auth.ts requireAuth).
+  sid: string;
 }
 
 export function signToken(payload: AuthTokenPayload): string {

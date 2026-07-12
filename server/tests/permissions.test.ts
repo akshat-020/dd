@@ -109,9 +109,12 @@ describe("composable scan permission: Accountant loses putaway/transfer, Sales c
     expect(transferRes.status).toBe(403);
   });
 
-  it("Accountant can still log a new batch (purchase/production entry is a separate permission)", async () => {
-    const res = await request(app).post("/api/stock/batches").set(auth(accountant.token)).send({ skuId, sourceType: "PURCHASE" });
-    expect(res.status).toBe(201);
+  it("Accountant is blocked from logging a new inward entry (see tests/inward-entry.test.ts for the full inward-entry permission matrix)", async () => {
+    const res = await request(app)
+      .post("/api/stock/batches")
+      .set(auth(accountant.token))
+      .send({ skuId, sourceType: "PURCHASE", receivedQuantity: 1 });
+    expect(res.status).toBe(403);
   });
 
   it("Sales is blocked from putaway/pick by default", async () => {
