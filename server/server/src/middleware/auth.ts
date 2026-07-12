@@ -2,12 +2,17 @@ import type { NextFunction, Request, Response } from "express";
 import { verifyToken } from "../lib/jwt.js";
 import type { Role } from "../lib/roles.js";
 import { canUseScanActions, canLogInwardEntry } from "../lib/permissions.js";
+import { touchSession } from "../lib/session.js";
 
 export interface AuthedRequest extends Request {
-  user?: { id: string; role: Role; name: string };
+  user?: { id: string; role: Role; name: string; sessionId: string };
 }
 
-export function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+// Verifies the JWT signature/expiry AND that the session it references is
+// still live — a JWT alone can't be revoked before its absolute expiry, so
+// the session check is what makes "sign this device out remotely" and
+// "expire after N minutes of inactivity" actually work (see lib/session.ts).
+export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   // <img src> tags (used for QR label images) can't set an Authorization
   // header, so those routes accept the token as a query param too.
@@ -18,7 +23,12 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
   }
   try {
     const payload = verifyToken(token);
-    req.user = { id: payload.sub, role: payload.role, name: payload.name };
+    const sessionCheck = await touchSession(payload.sid);
+    if (!sessionCheck.ok) {
+      const message = sessionCheck.reason === "inactive" ? "Session expired due to inactivity" : "Session has been signed out";
+      return res.status(401).json({ error: message });
+    }
+    req.user = { id: payload.sub, role: payload.role, name: payload.name, sessionId: payload.sid };
     next();
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });

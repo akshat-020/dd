@@ -37,12 +37,37 @@ model User {
   // is a separate, Owner+Accountant-only action — never gated by this flag.
   canLogInwardEntry Boolean @default(true)
 
+  // Optional TOTP-based 2FA. Recommended (not forced) for Owner/Accountant
+  // since those roles reach pricing/cost data — a compromised password
+  // alone shouldn't be enough. totpSecret is only set once enrollment is
+  // completed (see routes/auth.ts); totpEnabled gates whether login
+  // actually requires the second factor.
+  totpSecret  String?
+  totpEnabled Boolean @default(false)
+
   ordersCreated            Order[]                 @relation("OrderCreatedBy")
   stockMovements           StockMovement[]
   pickListItemsDone        PickListItem[]
   invoiceRefsCreated       InvoiceReference[]
   purchaseCostRefsCreated  PurchaseCostReference[]
   auditLogs                AuditLog[]
+  sessions                 Session[]
+}
+
+// Server-side session record backing each JWT (the token embeds this row's
+// id as `sid`). This is what makes two things possible that a pure
+// stateless JWT can't do on its own: inactivity-based expiry (checked and
+// refreshed on every request) and immediate remote revocation — an Owner
+// can invalidate a lost phone's session right away instead of waiting up
+// to the JWT's absolute expiry.
+model Session {
+  id         String    @id @default(cuid())
+  user       User      @relation(fields: [userId], references: [id])
+  userId     String
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  revokedAt  DateTime?
 }
 
 model Sku {
@@ -177,7 +202,11 @@ model OrderLinePrice {
   id          String    @id @default(cuid())
   orderLine   OrderLine @relation(fields: [orderLineId], references: [id])
   orderLineId String    @unique
-  unitPrice   Float
+  // Encrypted at rest (AES-256-GCM, see src/lib/crypto.ts) — stored as an
+  // opaque ciphertext string, never a plain numeric column. Encrypted/
+  // decrypted only in the request handler for a role that's already
+  // allowed to see it; it's never queried or aggregated at the SQL level.
+  unitPrice   String
   updatedAt   DateTime  @updatedAt
   updatedById String
 }
@@ -222,7 +251,8 @@ model InvoiceReferenceLine {
   sku                 Sku               @relation(fields: [skuId], references: [id])
   skuId               String
   qty                 Int
-  price               Float
+  // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
+  price               String
 }
 
 // The cost/financial counterpart to a SkuBatch inward entry — mirrors
@@ -234,7 +264,8 @@ model PurchaseCostReference {
   batch       SkuBatch @relation(fields: [batchId], references: [id])
   batchId     String
   quantity    Int
-  unitCost    Float
+  // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
+  unitCost    String
   supplierRef String?
   note        String?
   createdBy   User     @relation(fields: [createdById], references: [id])
@@ -242,14 +273,21 @@ model PurchaseCostReference {
   createdAt   DateTime @default(now())
 }
 
+// Append-only by construction — no route anywhere updates or deletes an
+// AuditLog row. hash/previousHash form a tamper-evident chain (each row's
+// hash covers its own content + the prior row's hash) so that even a direct
+// database edit changes the chain and can be detected by recomputing it,
+// not just relying on "no API exists to do it."
 model AuditLog {
-  id         String   @id @default(cuid())
-  user       User     @relation(fields: [userId], references: [id])
-  userId     String
-  action     String
-  entityType String
-  entityId   String
-  before     String?
-  after      String?
-  createdAt  DateTime @default(now())
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [userId], references: [id])
+  userId       String
+  action       String
+  entityType   String
+  entityId     String
+  before       String?
+  after        String?
+  createdAt    DateTime @default(now())
+  previousHash String?
+  hash         String
 }

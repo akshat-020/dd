@@ -137,6 +137,12 @@ describe("order -> finalize -> pick -> invoice flow", () => {
     expect(finalizeRes.status).toBe(409);
     const orderAfter = await prisma.order.findUnique({ where: { id: overorderId } });
     expect(orderAfter?.status).toBe("DRAFT");
+
+    // Clean up rather than leaving this draft around: since a DRAFT order's
+    // requested qty now counts as "committed" for every other order's
+    // availability check (see bugfixes.test.ts), a stray 99999-qty draft
+    // would otherwise starve every later test on this SKU.
+    await request(app).post(`/api/orders/${overorderId}/cancel`).set(auth(owner.token));
   });
 
   it("finalize allocates stock and generates a pick list grouped by location", async () => {

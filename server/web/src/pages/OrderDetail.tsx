@@ -246,6 +246,9 @@ export default function OrderDetail() {
                   {isDraft && (
                     <td className={`px-4 py-2 ${check && !check.sufficient ? "text-red-600 dark:text-red-400" : ""}`}>
                       {check ? check.available : "…"}
+                      {check && check.committedElsewhere > 0 && (
+                        <span className="ml-1 text-xs text-slate-400">({check.committedElsewhere} committed elsewhere)</span>
+                      )}
                     </td>
                   )}
                   {canSeePrice && !isDraft && <td className="px-4 py-2">{line.unitPrice != null ? `₹${line.unitPrice}` : "—"}</td>}
@@ -261,24 +264,28 @@ export default function OrderDetail() {
             })}
           </tbody>
         </table>
-
-        {isDraft && canEdit && (
-          <div className="border-t border-slate-200 p-3 dark:border-slate-800">
-            <SkuCombobox
-              skus={skus}
-              value={addItemSkuId}
-              onChange={(skuId) => {
-                setAddItemSkuId(skuId);
-                if (skuId) {
-                  addLine(skuId);
-                  setAddItemSkuId("");
-                }
-              }}
-              placeholder="+ Add item… search by code or name"
-            />
-          </div>
-        )}
       </div>
+
+      {/* Deliberately outside the table's `overflow-hidden` wrapper above —
+          the combobox's results dropdown is absolutely positioned and would
+          get clipped by that ancestor's overflow instead of rendering on
+          top of the page. */}
+      {isDraft && canEdit && (
+        <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+          <SkuCombobox
+            skus={skus}
+            value={addItemSkuId}
+            onChange={(skuId) => {
+              setAddItemSkuId(skuId);
+              if (skuId) {
+                addLine(skuId);
+                setAddItemSkuId("");
+              }
+            }}
+            placeholder="+ Add item… search by code or name"
+          />
+        </div>
+      )}
 
       {isDraft && canEdit && (
         <button onClick={handleFinalize} disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-3 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">

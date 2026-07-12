@@ -5,7 +5,7 @@ import type { Role, User } from "../api/types";
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, totpCode?: string) => Promise<void>;
   logout: () => void;
   hasRole: (...roles: Role[]) => boolean;
   // Owner/Warehouse always have scan-based putaway/pick access; Sales only
@@ -47,13 +47,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("oms:unauthorized", onUnauthorized);
   }, [loadMe]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await api.post<{ token: string; user: User }>("/auth/login", { email, password });
+  const login = useCallback(async (email: string, password: string, totpCode?: string) => {
+    const res = await api.post<{ token: string; user: User }>("/auth/login", { email, password, totpCode });
     setToken(res.token);
     setUser(res.user);
   }, []);
 
   const logout = useCallback(() => {
+    // Best-effort — revokes the server-side session so the token can't be
+    // reused even if something captured it, but don't block clearing the
+    // local session on the request succeeding.
+    api.post("/auth/logout").catch(() => {});
     setToken(null);
     setUser(null);
   }, []);

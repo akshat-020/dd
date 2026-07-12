@@ -13,6 +13,16 @@ export interface User {
   // true for them server-side. Owner always has it; Accountant/Warehouse
   // never do regardless of this flag.
   canLogInwardEntry?: boolean;
+  totpEnabled?: boolean;
+}
+
+export interface Session {
+  id: string;
+  userAgent?: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  current?: boolean;
+  user?: { id: string; name: string; email: string; role: Role };
 }
 
 export interface Sku {
@@ -116,12 +126,15 @@ export interface StockCheckResult {
   skuName: string;
   requested: number;
   available: number;
+  committedElsewhere: number;
   sufficient: boolean;
 }
 
 export interface StockSummaryEntry {
   skuId: string;
   totalQty: number;
+  committedQty: number;
+  availableQty: number;
 }
 
 export interface PickListItem {

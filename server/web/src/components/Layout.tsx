@@ -24,6 +24,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },
+  { to: "/security", label: "Security" },
 ];
 
 export default function Layout() {
