@@ -102,6 +102,11 @@ export interface StockCheckResult {
   sufficient: boolean;
 }
 
+export interface StockSummaryEntry {
+  skuId: string;
+  totalQty: number;
+}
+
 export interface PickListItem {
   id: string;
   orderId: string;

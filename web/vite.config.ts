@@ -21,6 +21,10 @@ export default defineConfig({
         icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
       },
       workbox: {
+        // App shell + API GETs are cached so the picking app can at least
+        // load and show the last-known pick list when offline. Mutating
+        // requests are never cached here — those go through the local
+        // Dexie action queue instead (see src/offline/queue.ts).
         navigateFallback: "/index.html",
         runtimeCaching: [
           {
@@ -33,6 +37,10 @@ export default defineConfig({
     }),
   ],
   server: {
+    // Baked in permanently (not just a Codespaces workaround) so the dev
+    // server is reachable through any forwarded-port proxy — Codespaces,
+    // Gitpod, ngrok, etc. — without editing this file each session. Only
+    // affects the local dev server, never the production build.
     host: true,
     allowedHosts: true,
     proxy: {

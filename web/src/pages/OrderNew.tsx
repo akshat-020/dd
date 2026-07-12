@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import type { Order, Sku } from "../api/types";
+import type { Order, Sku, StockSummaryEntry } from "../api/types";
+import { SkuCombobox } from "../components/SkuCombobox";
 
 interface LineDraft {
   skuId: string;
@@ -11,6 +12,7 @@ interface LineDraft {
 export default function OrderNew() {
   const navigate = useNavigate();
   const [skus, setSkus] = useState<Sku[]>([]);
+  const [stockBySku, setStockBySku] = useState<Map<string, number>>(new Map());
   const [buyerName, setBuyerName] = useState("");
   const [buyerContact, setBuyerContact] = useState("");
   const [vehicleCapacityNote, setVehicleCapacityNote] = useState("");
@@ -20,6 +22,11 @@ export default function OrderNew() {
 
   useEffect(() => {
     api.get<Sku[]>("/skus").then(setSkus).catch(() => {});
+    // Live availability while composing — not just after the order exists.
+    api
+      .get<StockSummaryEntry[]>("/stock/summary")
+      .then((rows) => setStockBySku(new Map(rows.map((r) => [r.skuId, r.totalQty]))))
+      .catch(() => {});
   }, []);
 
   function updateLine(idx: number, patch: Partial<LineDraft>) {
@@ -95,40 +102,41 @@ export default function OrderNew() {
           />
         </label>
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           <span className="block text-sm font-medium text-slate-700 dark:text-slate-300">Items</span>
-          {lines.map((line, idx) => (
-            <div key={idx} className="flex gap-2">
-              <select
-                value={line.skuId}
-                onChange={(e) => updateLine(idx, { skuId: e.target.value })}
-                className="flex-1 rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              >
-                <option value="">Select SKU…</option>
-                {skus.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.code} — {s.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="number"
-                min={1}
-                placeholder="Qty"
-                value={line.qtyRequested}
-                onChange={(e) => updateLine(idx, { qtyRequested: e.target.value })}
-                className="w-24 rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              />
-              <button
-                type="button"
-                onClick={() => removeLine(idx)}
-                disabled={lines.length === 1}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-slate-500 disabled:opacity-30 dark:border-slate-700"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+          {lines.map((line, idx) => {
+            const available = line.skuId ? stockBySku.get(line.skuId) ?? 0 : null;
+            const requested = Number(line.qtyRequested) || 0;
+            const insufficient = available !== null && requested > available;
+            return (
+              <div key={idx} className="space-y-1">
+                <div className="flex gap-2">
+                  <SkuCombobox skus={skus} value={line.skuId} onChange={(skuId) => updateLine(idx, { skuId })} quantities={stockBySku} className="flex-1" />
+                  <input
+                    type="number"
+                    min={1}
+                    placeholder="Qty"
+                    value={line.qtyRequested}
+                    onChange={(e) => updateLine(idx, { qtyRequested: e.target.value })}
+                    className="w-24 rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeLine(idx)}
+                    disabled={lines.length === 1}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-slate-500 disabled:opacity-30 dark:border-slate-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {available !== null && (
+                  <p className={`text-xs ${insufficient ? "text-red-600 dark:text-red-400" : "text-slate-400"}`}>
+                    {available} in stock{insufficient ? " — not enough for this quantity" : ""}
+                  </p>
+                )}
+              </div>
+            );
+          })}
           <button type="button" onClick={addLine} className="text-sm font-medium text-slate-600 underline dark:text-slate-300">
             + Add item
           </button>
