@@ -1,0 +1,20 @@
+{
+  "name": "oms-erp",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "setup": "npm install && cp -n server/.env.example server/.env && npm run --workspace server prisma:generate && npm run --workspace server prisma:deploy && npm run --workspace server seed",
+    "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace server",
+    "dev:web": "npm run dev --workspace web -- --host",
+    "build:server": "npm run build --workspace server",
+    "build:web": "npm run build --workspace web",
+    "test:server": "npm run test --workspace server"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}
