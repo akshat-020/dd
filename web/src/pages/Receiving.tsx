@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, qrImageUrl } from "../api/client";
 import type { Location, Sku, SkuBatch } from "../api/types";
 import { QrScannerModal } from "../components/QrScannerModal";
+import { SkuCombobox } from "../components/SkuCombobox";
 import { useAuth } from "../auth/AuthContext";
 
 type ScannerTarget = "location" | "sku" | null;
@@ -105,19 +106,7 @@ export default function Receiving() {
 
       <form onSubmit={handleCreateBatch} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
         <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">1. Log a new batch</h2>
-        <select
-          value={skuId}
-          onChange={(e) => setSkuId(e.target.value)}
-          required
-          className="w-full rounded-lg border border-slate-300 px-3 py-3 outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-        >
-          <option value="">Select SKU…</option>
-          {skus.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.code} — {s.name}
-            </option>
-          ))}
-        </select>
+        <SkuCombobox skus={skus} value={skuId} onChange={setSkuId} />
         <div className="flex gap-2">
           {(["PURCHASE", "PRODUCTION"] as const).map((t) => (
             <button

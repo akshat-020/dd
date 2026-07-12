@@ -1,12 +1,16 @@
-import { useEffect, useState } from "react";
-import { api, ApiError } from "../api/client";
+import { useEffect, useMemo, useState } from "react";
+import { api, ApiError, qrImageUrl } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import type { Sku } from "../api/types";
+import type { Sku, SkuBatch, StockSummaryEntry } from "../api/types";
 
 export default function SkusPage() {
   const { hasRole } = useAuth();
   const canEdit = hasRole("OWNER", "ACCOUNTANT", "WAREHOUSE");
+  const canSeeStock = hasRole("OWNER", "ACCOUNTANT", "SALES");
   const [skus, setSkus] = useState<Sku[]>([]);
+  const [stockBySku, setStockBySku] = useState<Map<string, number>>(new Map());
+  const [search, setSearch] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ code: "", name: "", unit: "", category: "", reorderThreshold: "0" });
@@ -17,9 +21,21 @@ export default function SkusPage() {
       .get<Sku[]>("/skus")
       .then(setSkus)
       .catch((e) => setError(e.message));
+    if (canSeeStock) {
+      api
+        .get<StockSummaryEntry[]>("/stock/summary")
+        .then((rows) => setStockBySku(new Map(rows.map((r) => [r.skuId, r.totalQty]))))
+        .catch(() => {});
+    }
   }
 
-  useEffect(load, []);
+  useEffect(load, [canSeeStock]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return skus;
+    return skus.filter((s) => s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || (s.category ?? "").toLowerCase().includes(q));
+  }, [skus, search]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -57,6 +73,13 @@ export default function SkusPage() {
         )}
       </div>
 
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by code, name, or category…"
+        className="w-full rounded-lg border border-slate-300 px-3 py-3 text-base outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+      />
+
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p>}
 
       {showForm && (
@@ -89,22 +112,93 @@ export default function SkusPage() {
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Unit</th>
               <th className="px-4 py-2">Category</th>
-              <th className="px-4 py-2">Reorder at</th>
+              {canSeeStock && <th className="px-4 py-2">In stock</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {skus.map((s) => (
-              <tr key={s.id}>
-                <td className="px-4 py-2 font-mono text-xs">{s.code}</td>
-                <td className="px-4 py-2 text-slate-900 dark:text-slate-50">{s.name}</td>
-                <td className="px-4 py-2">{s.unit}</td>
-                <td className="px-4 py-2">{s.category ?? "—"}</td>
-                <td className="px-4 py-2">{s.reorderThreshold}</td>
-              </tr>
+            {filtered.map((s) => (
+              <SkuRow
+                key={s.id}
+                sku={s}
+                qty={canSeeStock ? stockBySku.get(s.id) ?? 0 : null}
+                expanded={expandedId === s.id}
+                onToggle={() => setExpandedId(expandedId === s.id ? null : s.id)}
+                canSeeStock={canSeeStock}
+              />
             ))}
           </tbody>
         </table>
-        {skus.length === 0 && <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">No SKUs yet.</p>}
+        {filtered.length === 0 && <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">No SKUs match.</p>}
+      </div>
+    </div>
+  );
+}
+
+function SkuRow({
+  sku,
+  qty,
+  expanded,
+  onToggle,
+  canSeeStock,
+}: {
+  sku: Sku;
+  qty: number | null;
+  expanded: boolean;
+  onToggle: () => void;
+  canSeeStock: boolean;
+}) {
+  return (
+    <>
+      <tr onClick={canSeeStock ? onToggle : undefined} className={canSeeStock ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}>
+        <td className="px-4 py-2 font-mono text-xs">{sku.code}</td>
+        <td className="px-4 py-2 text-slate-900 dark:text-slate-50">{sku.name}</td>
+        <td className="px-4 py-2">{sku.unit}</td>
+        <td className="px-4 py-2">{sku.category ?? "—"}</td>
+        {canSeeStock && (
+          <td className={`px-4 py-2 ${qty !== null && qty <= sku.reorderThreshold ? "text-red-600 dark:text-red-400" : ""}`}>
+            {qty} {expanded ? "▲" : "▼"}
+          </td>
+        )}
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={5} className="bg-slate-50 px-4 py-3 dark:bg-slate-800">
+            <BatchHistory skuId={sku.id} skuCode={sku.code} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function BatchHistory({ skuId, skuCode }: { skuId: string; skuCode: string }) {
+  const [batches, setBatches] = useState<SkuBatch[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<SkuBatch[]>(`/stock/batches?skuId=${skuId}`)
+      .then(setBatches)
+      .catch((e) => setError(e.message));
+  }, [skuId]);
+
+  if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
+  if (!batches) return <p className="text-sm text-slate-500 dark:text-slate-400">Loading batches…</p>;
+  if (batches.length === 0) return <p className="text-sm text-slate-500 dark:text-slate-400">No batches logged yet for {skuCode}.</p>;
+
+  return (
+    <div className="space-y-2">
+      <button onClick={() => window.print()} className="text-xs font-medium text-slate-500 underline dark:text-slate-400 print:hidden">
+        Print these labels
+      </button>
+      <div className="flex flex-wrap gap-3">
+        {batches.map((b) => (
+          <div key={b.id} className="flex flex-col items-center rounded-lg border border-slate-200 bg-white p-2 text-center dark:border-slate-700 dark:bg-slate-900">
+            <img src={qrImageUrl("batch", b.id)} alt={b.batchCode} className="h-20 w-20" />
+            <span className="mt-1 font-mono text-xs font-semibold">{b.batchCode}</span>
+            <span className="text-xs text-slate-400">{new Date(b.receivedDate).toLocaleDateString()} · {b.sourceType}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

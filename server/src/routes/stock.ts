@@ -39,6 +39,21 @@ stockRouter.post("/batches", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), as
   res.status(201).json(batch);
 });
 
+// Batch/QR history for a SKU — lets Owner/Accountant/Sales view or reprint
+// the label for any past batch, not just the one just created on the
+// Receiving screen (which only showed its QR transiently).
+stockRouter.get("/batches", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
+  const { skuId } = req.query;
+  if (typeof skuId !== "string") {
+    return res.status(400).json({ error: "skuId query param is required" });
+  }
+  const batches = await prisma.skuBatch.findMany({
+    where: { skuId },
+    orderBy: { receivedDate: "desc" },
+  });
+  res.json(batches);
+});
+
 stockRouter.get("/batches/:id", async (req, res) => {
   const batch = await prisma.skuBatch.findUnique({ where: { id: req.params.id }, include: { sku: true } });
   if (!batch) return res.status(404).json({ error: "Batch not found" });
@@ -101,6 +116,17 @@ stockRouter.get("/sku/:skuId/locations", requireRole("OWNER", "ACCOUNTANT", "SAL
     orderBy: { location: { code: "asc" } },
   });
   res.json(items);
+});
+
+// Total on-hand quantity per SKU across all locations — the "live quantity"
+// column on the SKU master page, and what order intake checks availability
+// against while a line is being composed (see /orders/:id/stock-check for
+// the per-order-line version once a draft exists).
+stockRouter.get("/summary", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {
+  const grouped = await prisma.stockItem.groupBy({ by: ["skuId"], _sum: { quantity: true } });
+  const totals = new Map(grouped.map((g) => [g.skuId, g._sum.quantity ?? 0]));
+  const skus = await prisma.sku.findMany({ where: { active: true }, select: { id: true } });
+  res.json(skus.map((s) => ({ skuId: s.id, totalQty: totals.get(s.id) ?? 0 })));
 });
 
 stockRouter.get("/low-stock", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {
