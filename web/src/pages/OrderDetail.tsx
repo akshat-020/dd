@@ -31,10 +31,14 @@ export default function OrderDetail() {
     try {
       const o = await api.get<Order>(`/orders/${id}`);
       setOrder(o);
-      if (o.status === "DRAFT") {
+      // Available-stock context is useful while Final Qty is still
+      // editable (DRAFT and FINALIZED, up to loading) — not once the order
+      // is locked and there's nothing left to decide.
+      if (o.status === "DRAFT" || o.status === "FINALIZED") {
         const check = await api.get<StockCheckResult[]>(`/orders/${id}/stock-check`);
         setStockCheck(check);
-      } else {
+      }
+      if (o.status !== "DRAFT") {
         const pl = await api.get<PickListItem[]>(`/picking/orders/${id}`);
         setPickList(pl);
       }
@@ -62,21 +66,40 @@ export default function OrderDetail() {
   if (!order) return <p className="text-sm text-slate-500 dark:text-slate-400">{error ?? "Loading…"}</p>;
 
   const isDraft = order.status === "DRAFT";
+  const isFinalized = order.status === "FINALIZED";
+  // Editable up to the point loading is complete — matches the server's
+  // own lock point (PATCH /orders/:id rejects LOADED/INVOICED/CANCELLED).
+  const isEditable = isDraft || isFinalized;
 
-  async function updateLineQty(lineId: string, qtyRequested: number) {
-    await api.patch(`/orders/${id}`, { lines: [{ id: lineId, qtyRequested }] });
-    load();
+  async function updateFinalQty(lineId: string, qtyFinalized: number) {
+    setError(null);
+    try {
+      await api.patch(`/orders/${id}`, { lines: [{ id: lineId, qtyFinalized }] });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update quantity");
+    }
   }
 
   async function removeLine(lineId: string) {
-    await api.patch(`/orders/${id}`, { lines: [{ id: lineId, remove: true }] });
-    load();
+    setError(null);
+    try {
+      await api.patch(`/orders/${id}`, { lines: [{ id: lineId, remove: true }] });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to remove line");
+    }
   }
 
   async function addLine(skuId: string) {
     if (!skuId) return;
-    await api.patch(`/orders/${id}`, { lines: [{ skuId, qtyRequested: 1 }] });
-    load();
+    setError(null);
+    try {
+      await api.patch(`/orders/${id}`, { lines: [{ skuId, qtyRequested: 1 }] });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to add item");
+    }
   }
 
   async function saveHeader() {
@@ -209,41 +232,44 @@ export default function OrderDetail() {
             <tr>
               <th className="px-4 py-2">SKU</th>
               <th className="px-4 py-2">Requested</th>
-              {!isDraft && <th className="px-4 py-2">Finalized</th>}
+              <th className="px-4 py-2">Final qty</th>
               {!isDraft && <th className="px-4 py-2">Picked</th>}
-              {isDraft && <th className="px-4 py-2">Available</th>}
+              {isEditable && <th className="px-4 py-2">Available</th>}
               {canSeePrice && !isDraft && <th className="px-4 py-2">Unit price</th>}
-              {isDraft && canEdit && <th className="px-4 py-2"></th>}
+              {isEditable && canEdit && <th className="px-4 py-2"></th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {order.lines.map((line) => {
               const check = stockCheck.find((c) => c.lineId === line.id);
+              const finalQty = line.qtyFinalized ?? line.qtyRequested;
               return (
                 <tr key={line.id}>
                   <td className="px-4 py-2">
                     {line.sku.code}
                     <div className="text-xs text-slate-400">{line.sku.name}</div>
                   </td>
+                  {/* Requested is the original ask — locked the moment the
+                      line exists, never editable again. */}
+                  <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{line.qtyRequested}</td>
                   <td className="px-4 py-2">
-                    {isDraft && canEdit ? (
+                    {isEditable && canEdit ? (
                       <input
                         type="number"
-                        min={1}
-                        defaultValue={line.qtyRequested}
+                        min={0}
+                        defaultValue={finalQty}
                         onBlur={(e) => {
                           const v = Number(e.target.value);
-                          if (v > 0 && v !== line.qtyRequested) updateLineQty(line.id, v);
+                          if (v >= 0 && v !== finalQty) updateFinalQty(line.id, v);
                         }}
                         className="w-20 rounded border border-slate-300 px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
                       />
                     ) : (
-                      line.qtyRequested
+                      finalQty
                     )}
                   </td>
-                  {!isDraft && <td className="px-4 py-2">{line.qtyFinalized ?? "—"}</td>}
                   {!isDraft && <td className="px-4 py-2">{line.qtyPicked}</td>}
-                  {isDraft && (
+                  {isEditable && (
                     <td className={`px-4 py-2 ${check && !check.sufficient ? "text-red-600 dark:text-red-400" : ""}`}>
                       {check ? check.available : "…"}
                       {check && check.committedElsewhere > 0 && (
@@ -252,7 +278,7 @@ export default function OrderDetail() {
                     </td>
                   )}
                   {canSeePrice && !isDraft && <td className="px-4 py-2">{line.unitPrice != null ? `₹${line.unitPrice}` : "—"}</td>}
-                  {isDraft && canEdit && (
+                  {isEditable && canEdit && (
                     <td className="px-4 py-2">
                       <button onClick={() => removeLine(line.id)} className="text-slate-400 hover:text-red-600">
                         ✕
@@ -270,7 +296,7 @@ export default function OrderDetail() {
           the combobox's results dropdown is absolutely positioned and would
           get clipped by that ancestor's overflow instead of rendering on
           top of the page. */}
-      {isDraft && canEdit && (
+      {isEditable && canEdit && (
         <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
           <SkuCombobox
             skus={skus}
@@ -301,6 +327,11 @@ export default function OrderDetail() {
               <li key={item.id} className="flex items-center justify-between px-4 py-2 text-sm">
                 <span>
                   #{item.sequence} · {item.location.code} · {item.sku.code} × {item.qtyToPick}
+                  {item.isShortfallFollowup && (
+                    <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                      shortfall follow-up
+                    </span>
+                  )}
                 </span>
                 <span className={item.status === "PICKED" ? "text-green-600 dark:text-green-400" : "text-slate-400"}>{item.status}</span>
               </li>

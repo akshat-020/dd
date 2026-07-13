@@ -232,6 +232,15 @@ model PickListItem {
   pickedBy   User?     @relation(fields: [pickedById], references: [id])
   pickedById String?
   pickedAt   DateTime?
+
+  // Set when this row exists because a previous pick came up short (picked
+  // less than qtyToPick) — an auto-generated follow-up task for the
+  // remainder, rather than something finalize itself allocated. `note`
+  // carries the human-readable reason ("Shortfall follow-up: picked 9 of
+  // 10 at <location>"); `isShortfallFollowup` is what the Dashboard's
+  // "Shortfalls needing attention" list actually queries on.
+  isShortfallFollowup Boolean @default(false)
+  note                String?
 }
 
 model InvoiceReference {

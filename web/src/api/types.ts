@@ -54,6 +54,9 @@ export interface SkuBatch {
   receivedDate: string;
   note?: string | null;
   sku?: Sku;
+  // Only present on /stock/batches/recent — null means "no declared
+  // quantity to compare against" (legacy batch), not "nothing left".
+  remainingToShelve?: number | null;
 }
 
 export interface PurchaseCostReference {
@@ -149,6 +152,8 @@ export interface PickListItem {
   status: "PENDING" | "LOCATION_CONFIRMED" | "SKU_CONFIRMED" | "PICKED";
   pickedBy?: { id: string; name: string } | null;
   pickedAt?: string | null;
+  isShortfallFollowup?: boolean;
+  note?: string | null;
   sku: Sku;
   location: Location;
 }
@@ -178,6 +183,40 @@ export interface LowStockSku {
   name: string;
   reorderThreshold: number;
   totalQty: number;
+}
+
+export interface Shortfall {
+  pickListItemId: string;
+  orderId: string;
+  orderNumber: string;
+  buyerName: string;
+  skuId: string;
+  skuCode: string;
+  skuName: string;
+  locationCode: string;
+  shortfallQty: number;
+  note?: string | null;
+}
+
+export interface MyTaskHistory {
+  picks: {
+    id: string;
+    skuCode: string;
+    skuName: string;
+    locationCode: string;
+    qty: number;
+    orderNumber: string;
+    pickedAt: string | null;
+  }[];
+  putaways: {
+    id: string;
+    skuCode: string;
+    skuName: string;
+    locationCode: string;
+    batchCode: string | null;
+    qty: number;
+    createdAt: string;
+  }[];
 }
 
 export interface AuditLogEntry {

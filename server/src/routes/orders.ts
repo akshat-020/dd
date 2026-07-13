@@ -5,7 +5,7 @@ import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth
 import { recordAudit } from "../lib/audit.js";
 import { PRICE_VISIBLE_ROLES } from "../lib/roles.js";
 import { decryptNumber } from "../lib/crypto.js";
-import { getCommittedQuantities } from "../lib/stock.js";
+import { getCommittedQuantities, reconcileOrderLineAllocation, ShortfallError } from "../lib/stock.js";
 
 export const ordersRouter = Router();
 
@@ -47,7 +47,11 @@ async function serializeOrder(orderId: string, includePrice: boolean) {
   };
 }
 
-ordersRouter.get("/", async (req: AuthedRequest, res) => {
+// General order browsing is excluded from Warehouse's task-scoped
+// visibility — their view is entirely /api/picking/* (which never touches
+// this router), plus /api/reports/my-task-history for their own completed
+// work. See the permission model addendum.
+ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const { status } = req.query;
   const { id: userId, role } = req.user!;
 
@@ -77,7 +81,7 @@ ordersRouter.get("/", async (req: AuthedRequest, res) => {
   res.json(serialized);
 });
 
-ordersRouter.get("/:id", async (req: AuthedRequest, res) => {
+ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
   if (!raw || !canAccessOrder(req.user!, raw)) return res.status(404).json({ error: "Order not found" });
   const order = await serializeOrder(req.params.id, canSeePrice(req.user!.role));
@@ -124,7 +128,7 @@ ordersRouter.post("/", requireRole("OWNER", "SALES"), async (req: AuthedRequest,
 // orders' pick-list qty) — checking against raw on-hand alone lets two
 // orders both get told a SKU is available when there's really only enough
 // for one (see getCommittedQuantities in lib/stock.ts).
-ordersRouter.get("/:id/stock-check", async (req: AuthedRequest, res) => {
+ordersRouter.get("/:id/stock-check", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: { include: { sku: true } } } });
   if (!order) return res.status(404).json({ error: "Order not found" });
   if (!canAccessOrder(req.user!, order)) return res.status(404).json({ error: "Order not found" });
@@ -164,7 +168,7 @@ const updateLinesSchema = z.object({
       z.object({
         id: z.string().optional(), // omit to add a new line
         skuId: z.string().min(1).optional(),
-        qtyRequested: z.number().int().positive().optional(),
+        qtyRequested: z.number().int().positive().optional(), // only used when adding a new line — see below
         qtyFinalized: z.number().int().min(0).optional(),
         notes: z.string().optional(),
         remove: z.boolean().optional(),
@@ -173,8 +177,20 @@ const updateLinesSchema = z.object({
     .optional(),
 });
 
-// Edit a draft order — quantities/items get adjusted here to account for
-// vehicle load capacity and actual availability before finalizing.
+// Edit an order. Requested qty is the original ask and is locked the
+// moment a line exists — this endpoint only ever writes qtyRequested when
+// *creating* a new line (no `id`); an existing line's `qtyRequested` in the
+// payload is ignored. Final Qty (qtyFinalized) is the one editable
+// quantity field, and it's what actually drives stock allocation.
+//
+// Editable while DRAFT (no PickListItems exist yet, so this is a plain
+// field update) or FINALIZED (up to the point loading is complete —
+// LOADED/INVOICED/CANCELLED are locked). Editing a FINALIZED order's
+// quantities reconciles the pick list allocation immediately
+// (reconcileOrderLineAllocation) so nothing about location assignments
+// goes stale; by the time an order can be INVOICED it's already past
+// LOADED, which is locked, so the Invoice Reference layer can never see a
+// post-invoice edit in the first place.
 ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequest, res) => {
   const parsed = updateLinesSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -182,28 +198,60 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
   }
   const before = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
   if (!before || !canAccessOrder(req.user!, before)) return res.status(404).json({ error: "Order not found" });
-  if (before.status !== "DRAFT") {
-    return res.status(409).json({ error: "Only draft orders can be edited" });
+  if (before.status !== "DRAFT" && before.status !== "FINALIZED") {
+    return res.status(409).json({ error: "Only draft or finalized (not yet loaded) orders can be edited" });
   }
+  const isFinalized = before.status === "FINALIZED";
 
-  await prisma.$transaction(async (tx) => {
-    const { lines, ...orderFields } = parsed.data;
-    if (Object.keys(orderFields).length > 0) {
-      await tx.order.update({ where: { id: before.id }, data: orderFields });
-    }
-    for (const line of lines ?? []) {
-      if (line.id && line.remove) {
-        await tx.orderLine.delete({ where: { id: line.id } });
-      } else if (line.id) {
-        await tx.orderLine.update({
-          where: { id: line.id },
-          data: { qtyRequested: line.qtyRequested, qtyFinalized: line.qtyFinalized, notes: line.notes },
-        });
-      } else if (line.skuId && line.qtyRequested) {
-        await tx.orderLine.create({ data: { orderId: before.id, skuId: line.skuId, qtyRequested: line.qtyRequested, notes: line.notes } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const { lines, ...orderFields } = parsed.data;
+      if (Object.keys(orderFields).length > 0) {
+        await tx.order.update({ where: { id: before.id }, data: orderFields });
       }
+      for (const line of lines ?? []) {
+        if (line.id && line.remove) {
+          const existing = before.lines.find((l) => l.id === line.id);
+          if (!existing) continue;
+          if (isFinalized) {
+            if (existing.qtyPicked > 0) {
+              throw new Error(`Cannot remove ${existing.skuId} — it's already been partially or fully picked`);
+            }
+            await tx.pickListItem.deleteMany({ where: { orderId: before.id, skuId: existing.skuId, status: { not: "PICKED" } } });
+          }
+          await tx.orderLine.delete({ where: { id: line.id } });
+        } else if (line.id) {
+          const existing = before.lines.find((l) => l.id === line.id);
+          if (!existing) continue;
+          if (isFinalized && line.qtyFinalized !== undefined) {
+            await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: existing.skuId, newQty: line.qtyFinalized });
+          }
+          await tx.orderLine.update({ where: { id: line.id }, data: { qtyFinalized: line.qtyFinalized, notes: line.notes } });
+        } else if (line.skuId && line.qtyRequested) {
+          const newLine = await tx.orderLine.create({
+            data: {
+              orderId: before.id,
+              skuId: line.skuId,
+              qtyRequested: line.qtyRequested,
+              qtyFinalized: isFinalized ? line.qtyRequested : undefined,
+              notes: line.notes,
+            },
+          });
+          if (isFinalized) {
+            await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: newLine.skuId, newQty: line.qtyRequested });
+          }
+        }
+      }
+    });
+  } catch (err) {
+    if (err instanceof ShortfallError) {
+      return res.status(409).json({ error: err.message, skuId: err.skuId, requested: err.requested, available: err.available });
     }
-  });
+    if (err instanceof Error) {
+      return res.status(409).json({ error: err.message });
+    }
+    throw err;
+  }
 
   const after = await serializeOrder(before.id, canSeePrice(req.user!.role));
   await recordAudit({ userId: req.user!.id, action: "UPDATE", entityType: "Order", entityId: before.id, before, after });

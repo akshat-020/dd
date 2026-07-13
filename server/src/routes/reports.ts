@@ -111,3 +111,72 @@ reportsRouter.get("/audit-log/verify", requireRole("OWNER"), async (_req, res) =
   const result = await verifyAuditChain();
   res.json(result);
 });
+
+// Unresolved picking shortfalls — the in-app equivalent of "notify Sales
+// staff/Owner of the shortfall" (there's no email/SMS service configured;
+// see README). A shortfall counts as resolved once its follow-up task is
+// itself picked, or once the order is no longer active.
+reportsRouter.get("/shortfalls", requireRole("OWNER", "SALES"), async (_req, res) => {
+  const items = await prisma.pickListItem.findMany({
+    where: { isShortfallFollowup: true, status: { not: "PICKED" } },
+    include: { sku: true, location: true, order: { select: { id: true, orderNumber: true, buyerName: true, status: true } } },
+    orderBy: { id: "desc" },
+  });
+  res.json(
+    items
+      .filter((i) => i.order.status !== "CANCELLED")
+      .map((i) => ({
+        pickListItemId: i.id,
+        orderId: i.order.id,
+        orderNumber: i.order.orderNumber,
+        buyerName: i.order.buyerName,
+        skuId: i.skuId,
+        skuCode: i.sku.code,
+        skuName: i.sku.name,
+        locationCode: i.location.code,
+        shortfallQty: i.qtyToPick,
+        note: i.note,
+      }))
+  );
+});
+
+// A warehouse account's own recently completed work — picks and putaways —
+// so they can answer "did I pick that?" without needing general order or
+// stock-browsing access (per the permission model's task-scoped visibility).
+reportsRouter.get("/my-task-history", async (req: AuthedRequest, res) => {
+  const userId = req.user!.id;
+  const [picks, putaways] = await Promise.all([
+    prisma.pickListItem.findMany({
+      where: { pickedById: userId, status: "PICKED" },
+      include: { sku: true, location: true, order: { select: { orderNumber: true } } },
+      orderBy: { pickedAt: "desc" },
+      take: 50,
+    }),
+    prisma.stockMovement.findMany({
+      where: { userId, type: "INBOUND", reason: "Putaway" },
+      include: { sku: true, location: true, batch: true },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    }),
+  ]);
+  res.json({
+    picks: picks.map((p) => ({
+      id: p.id,
+      skuCode: p.sku.code,
+      skuName: p.sku.name,
+      locationCode: p.location.code,
+      qty: p.qtyPicked,
+      orderNumber: p.order.orderNumber,
+      pickedAt: p.pickedAt,
+    })),
+    putaways: putaways.map((m) => ({
+      id: m.id,
+      skuCode: m.sku.code,
+      skuName: m.sku.name,
+      locationCode: m.location.code,
+      batchCode: m.batch?.batchCode ?? null,
+      qty: m.quantity,
+      createdAt: m.createdAt,
+    })),
+  });
+});

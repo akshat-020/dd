@@ -188,6 +188,12 @@ export default function PickingSession() {
           <div className="mb-1 text-2xl font-bold text-slate-900 dark:text-slate-50">{currentItem.sku.code}</div>
           <div className="mb-4 text-sm text-slate-500 dark:text-slate-400">{currentItem.sku.name}</div>
 
+          {currentItem.isShortfallFollowup && (
+            <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+              {currentItem.note ?? "Follow-up task from an earlier shortfall."}
+            </p>
+          )}
+
           <div className="mb-4 rounded-xl bg-slate-100 p-4 text-center dark:bg-slate-800">
             <div className="text-xs uppercase text-slate-500 dark:text-slate-400">Go to location</div>
             <div className="text-3xl font-bold tracking-wide text-slate-900 dark:text-slate-50">{currentItem.location.code}</div>

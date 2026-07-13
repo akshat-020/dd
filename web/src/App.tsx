@@ -16,6 +16,7 @@ import Pricing from "./pages/Pricing";
 import Reports from "./pages/Reports";
 import Users from "./pages/Users";
 import Security from "./pages/Security";
+import MyTasks from "./pages/MyTasks";
 
 function LoginRoute() {
   const { user, loading } = useAuth();
@@ -40,7 +41,14 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/skus" element={<SkusPage />} />
             <Route path="/locations" element={<LocationsPage />} />
-            <Route path="/orders" element={<OrdersList />} />
+            <Route
+              path="/orders"
+              element={
+                <ProtectedRoute roles={["OWNER", "ACCOUNTANT", "SALES"]}>
+                  <OrdersList />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/orders/new"
               element={
@@ -49,7 +57,14 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="/orders/:id" element={<OrderDetail />} />
+            <Route
+              path="/orders/:id"
+              element={
+                <ProtectedRoute roles={["OWNER", "ACCOUNTANT", "SALES"]}>
+                  <OrderDetail />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/picking"
               element={
@@ -84,6 +99,14 @@ export default function App() {
             />
             <Route path="/reports" element={<Reports />} />
             <Route path="/security" element={<Security />} />
+            <Route
+              path="/my-tasks"
+              element={
+                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess allowInwardEntryAccess>
+                  <MyTasks />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/users"
               element={

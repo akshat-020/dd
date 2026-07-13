@@ -45,6 +45,11 @@ export default function Receiving() {
   }, [hasScanAccess, batch]);
 
   const activeSku = batch?.sku ?? skus.find((s) => s.id === batch?.skuId);
+  // A just-created batch has nothing shelved yet, so falls back to its full
+  // declared quantity; a batch picked from "recent" already carries the
+  // computed remainder. Null means "no declared quantity to compare
+  // against" (legacy batch) — no cap to show.
+  const remainingToShelve = batch ? batch.remainingToShelve ?? batch.receivedQuantity ?? null : null;
 
   async function handleCreateBatch(e: React.FormEvent) {
     e.preventDefault();
@@ -194,6 +199,9 @@ export default function Receiving() {
                   <span>
                     <span className="font-mono font-semibold">{b.sku?.code}</span>
                     <span className="text-slate-400"> · {b.batchCode}</span>
+                    {b.remainingToShelve != null && (
+                      <span className="ml-2 text-xs text-slate-400">{b.remainingToShelve} left to shelve</span>
+                    )}
                   </span>
                   <span className="text-xs text-slate-400">{new Date(b.receivedDate).toLocaleDateString()}</span>
                 </button>
@@ -244,9 +252,13 @@ export default function Receiving() {
 
               {location && skuLabelConfirmed && (
                 <>
+                  {remainingToShelve != null && (
+                    <p className="text-center text-xs text-slate-400">{remainingToShelve} remaining to shelve for this batch</p>
+                  )}
                   <input
                     type="number"
                     min={1}
+                    max={remainingToShelve ?? undefined}
                     required
                     value={qty}
                     onChange={(e) => setQty(e.target.value)}

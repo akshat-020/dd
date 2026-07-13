@@ -201,15 +201,16 @@ describe("order -> finalize -> pick -> invoice flow", () => {
     expect(total).toBe(50); // 100 putaway - 50 picked
   });
 
-  it("SALES and WAREHOUSE never see price fields on the order", async () => {
+  it("SALES never sees price fields on the order; WAREHOUSE has no general order access at all", async () => {
     const asSales = await request(app).get(`/api/orders/${orderId}`).set(auth(sales.token));
-    const asWarehouse = await request(app).get(`/api/orders/${orderId}`).set(auth(warehouse.token));
-    for (const res of [asSales, asWarehouse]) {
-      for (const line of res.body.lines) {
-        expect(line).not.toHaveProperty("unitPrice");
-        expect(line).not.toHaveProperty("price");
-      }
+    for (const line of asSales.body.lines) {
+      expect(line).not.toHaveProperty("unitPrice");
+      expect(line).not.toHaveProperty("price");
     }
+    // Warehouse's visibility is task-scoped to /api/picking/* — see
+    // round2.test.ts for the full matrix.
+    const asWarehouse = await request(app).get(`/api/orders/${orderId}`).set(auth(warehouse.token));
+    expect(asWarehouse.status).toBe(403);
   });
 
   it("SALES and WAREHOUSE are forbidden from the pricing endpoints entirely", async () => {

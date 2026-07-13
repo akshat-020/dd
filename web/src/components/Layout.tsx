@@ -15,10 +15,13 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard" },
-  { to: "/orders", label: "Orders" },
+  // General order browsing/editing is excluded from Warehouse's task-scoped
+  // visibility — their view is Picking + Receiving + My Tasks below.
+  { to: "/orders", label: "Orders", roles: ["OWNER", "ACCOUNTANT", "SALES"] },
   { to: "/orders/new", label: "New Order", roles: ["OWNER", "SALES"] },
   { to: "/picking", label: "Picking", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
   { to: "/receiving", label: "Receiving", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
+  { to: "/my-tasks", label: "My Tasks", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
   { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },

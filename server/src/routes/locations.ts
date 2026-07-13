@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
@@ -121,4 +122,37 @@ locationsRouter.patch("/:id", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), a
   const location = await prisma.location.update({ where: { id: req.params.id }, data: parsed.data });
   await recordAudit({ userId: req.user!.id, action: "UPDATE", entityType: "Location", entityId: location.id, before, after: location });
   res.json(location);
+});
+
+// Permanently removes a location that was never really used — genuinely
+// unused locations (no stock, no movement/pick-list history) can be
+// deleted outright. A location with any stock currently assigned is
+// always blocked (move the stock out first). A location with historical
+// movement/pick-list rows but no *current* stock can't be hard-deleted
+// either (those rows have a required foreign key to it) — the response
+// tells the caller to deactivate it instead (PATCH active:false), which
+// hides it from pickers/putaway without losing that history.
+locationsRouter.delete("/:id", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+  const location = await prisma.location.findUnique({ where: { id: req.params.id } });
+  if (!location) return res.status(404).json({ error: "Location not found" });
+
+  const stockHere = await prisma.stockItem.aggregate({ where: { locationId: location.id }, _sum: { quantity: true } });
+  if ((stockHere._sum.quantity ?? 0) > 0) {
+    return res.status(409).json({ error: "This location still has stock assigned to it — move it out before deleting." });
+  }
+
+  try {
+    await prisma.location.delete({ where: { id: location.id } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      return res.status(409).json({
+        error:
+          "This location has stock movement or pick-list history and can't be permanently deleted. Deactivate it instead so it's hidden from pickers/putaway without losing that history.",
+        canDeactivate: true,
+      });
+    }
+    throw err;
+  }
+  await recordAudit({ userId: req.user!.id, action: "DELETE", entityType: "Location", entityId: location.id, before: location });
+  res.status(204).send();
 });

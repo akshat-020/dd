@@ -6,7 +6,7 @@ import { canUseScanActions, canLogInwardEntry } from "../lib/permissions.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateQrPngBuffer, generateQrSvg, encodeSkuBatchLabel } from "../lib/qr.js";
-import { applyStockMovement, getCommittedQuantities, InsufficientStockError } from "../lib/stock.js";
+import { applyStockMovement, getCommittedQuantities, getShelvedQuantities, InsufficientStockError } from "../lib/stock.js";
 
 export const stockRouter = Router();
 
@@ -56,7 +56,9 @@ stockRouter.post("/batches", requireInwardEntryAccess, async (req: AuthedRequest
 // Recently logged batches across all SKUs — lets someone with putaway
 // access (typically Warehouse, who can't log inward entries themselves)
 // find a batch that Owner/Sales already logged and shelve it, without
-// needing to know which SKU to look under.
+// needing to know which SKU to look under. Only batches that still have
+// something left to shelve are offered — see getShelvedQuantities for the
+// full inward -> putaway task lifecycle this is closing out.
 stockRouter.get("/batches/recent", async (req: AuthedRequest, res) => {
   const { role, id: userId } = req.user!;
   const allowed = role === "OWNER" || (await canUseScanActions(userId, role)) || (await canLogInwardEntry(userId, role));
@@ -65,9 +67,17 @@ stockRouter.get("/batches/recent", async (req: AuthedRequest, res) => {
   const batches = await prisma.skuBatch.findMany({
     include: { sku: true },
     orderBy: { receivedDate: "desc" },
-    take: 50,
+    take: 100,
   });
-  res.json(batches);
+  const shelved = await getShelvedQuantities(
+    prisma,
+    batches.map((b) => b.id)
+  );
+  const withRemaining = batches
+    .map((b) => ({ ...b, remainingToShelve: b.receivedQuantity == null ? null : b.receivedQuantity - (shelved.get(b.id) ?? 0) }))
+    .filter((b) => b.remainingToShelve === null || b.remainingToShelve > 0)
+    .slice(0, 50);
+  res.json(withRemaining);
 });
 
 // Batch/QR history for a SKU — lets Owner/Accountant/Sales view or reprint
@@ -274,6 +284,20 @@ stockRouter.post("/putaway", requireScanAccess, async (req: AuthedRequest, res) 
   ]);
   if (!sku) return res.status(404).json({ error: "SKU not found" });
   if (!location) return res.status(404).json({ error: "Location not found" });
+
+  // Same "remaining to shelve" definition as /batches/recent — closes the
+  // task and stops over-shelving past what was actually received.
+  if (batchId) {
+    const batch = await prisma.skuBatch.findUnique({ where: { id: batchId } });
+    if (!batch) return res.status(404).json({ error: "Batch not found" });
+    if (batch.receivedQuantity != null) {
+      const shelved = await getShelvedQuantities(prisma, [batchId]);
+      const remaining = batch.receivedQuantity - (shelved.get(batchId) ?? 0);
+      if (quantity > remaining) {
+        return res.status(409).json({ error: `Cannot shelve more than the ${Math.max(remaining, 0)} remaining for this batch` });
+      }
+    }
+  }
 
   const result = await prisma.$transaction((tx) =>
     applyStockMovement(tx, {

@@ -205,22 +205,139 @@ function LocationsFullView() {
               <th className="px-4 py-2">Zone</th>
               <th className="px-4 py-2">Rack</th>
               <th className="px-4 py-2">Bin</th>
+              <th className="px-4 py-2">Status</th>
+              {canEdit && <th className="px-4 py-2"></th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {locations.map((l) => (
-              <tr key={l.id}>
-                <td className="px-4 py-2 font-mono text-xs">{l.code}</td>
-                <td className="px-4 py-2">{l.zone}</td>
-                <td className="px-4 py-2">{l.rack}</td>
-                <td className="px-4 py-2">{l.bin ?? "—"}</td>
-              </tr>
+              <LocationRow key={l.id} location={l} canEdit={canEdit} onChanged={load} />
             ))}
           </tbody>
         </table>
         {locations.length === 0 && <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">No locations yet.</p>}
       </div>
     </div>
+  );
+}
+
+function LocationRow({ location, canEdit, onChanged }: { location: Location; canEdit: boolean; onChanged: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ zone: location.zone, rack: location.rack, bin: location.bin ?? "" });
+  const [error, setError] = useState<string | null>(null);
+  const [deactivateOffer, setDeactivateOffer] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.patch(`/locations/${location.id}`, { zone: form.zone, rack: form.rack, bin: form.bin || undefined });
+      setEditing(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save changes");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirm(`Delete location ${location.code}?`)) return;
+    setError(null);
+    setDeactivateOffer(false);
+    try {
+      await api.delete(`/locations/${location.id}`);
+      onChanged();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+        if (err.body?.canDeactivate) setDeactivateOffer(true);
+      } else {
+        setError("Failed to delete location");
+      }
+    }
+  }
+
+  async function handleDeactivate() {
+    setError(null);
+    setDeactivateOffer(false);
+    try {
+      await api.patch(`/locations/${location.id}`, { active: false });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to deactivate location");
+    }
+  }
+
+  return (
+    <>
+      <tr>
+        <td className="px-4 py-2 font-mono text-xs">{location.code}</td>
+        {editing ? (
+          <>
+            <td className="px-4 py-2">
+              <input value={form.zone} onChange={(e) => setForm({ ...form, zone: e.target.value })} className="w-16 rounded border border-slate-300 px-2 py-1 dark:border-slate-700 dark:bg-slate-800" />
+            </td>
+            <td className="px-4 py-2">
+              <input value={form.rack} onChange={(e) => setForm({ ...form, rack: e.target.value })} className="w-16 rounded border border-slate-300 px-2 py-1 dark:border-slate-700 dark:bg-slate-800" />
+            </td>
+            <td className="px-4 py-2">
+              <input value={form.bin} onChange={(e) => setForm({ ...form, bin: e.target.value })} className="w-16 rounded border border-slate-300 px-2 py-1 dark:border-slate-700 dark:bg-slate-800" />
+            </td>
+          </>
+        ) : (
+          <>
+            <td className="px-4 py-2">{location.zone}</td>
+            <td className="px-4 py-2">{location.rack}</td>
+            <td className="px-4 py-2">{location.bin ?? "—"}</td>
+          </>
+        )}
+        <td className="px-4 py-2">
+          {location.active ? (
+            <span className="text-slate-500 dark:text-slate-400">Active</span>
+          ) : (
+            <span className="text-slate-400">Inactive</span>
+          )}
+        </td>
+        {canEdit && (
+          <td className="px-4 py-2">
+            {editing ? (
+              <form onSubmit={handleSave} className="flex gap-1">
+                <button type="submit" disabled={submitting} className="rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
+                  Save
+                </button>
+                <button type="button" onClick={() => setEditing(false)} className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-700">
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <div className="flex gap-2">
+                <button onClick={() => setEditing(true)} className="text-xs font-medium text-blue-600 underline dark:text-blue-400">
+                  Edit
+                </button>
+                <button onClick={handleDelete} className="text-xs font-medium text-red-600 underline dark:text-red-400">
+                  Delete
+                </button>
+              </div>
+            )}
+          </td>
+        )}
+      </tr>
+      {(error || deactivateOffer) && (
+        <tr>
+          <td colSpan={canEdit ? 6 : 5} className="bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+            {error}
+            {deactivateOffer && (
+              <button onClick={handleDeactivate} className="ml-2 font-medium underline">
+                Deactivate instead
+              </button>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

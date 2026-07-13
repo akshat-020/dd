@@ -77,7 +77,7 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
   const parsed = confirmSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 
-  const item = await prisma.pickListItem.findUnique({ where: { id: req.params.itemId } });
+  const item = await prisma.pickListItem.findUnique({ where: { id: req.params.itemId }, include: { sku: true, location: true } });
   if (!item) return res.status(404).json({ error: "Pick list item not found" });
   if (item.status === "PICKED") return res.status(409).json({ error: "Item already picked" });
   if (item.status !== "SKU_CONFIRMED") {
@@ -86,6 +86,13 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
   if (parsed.data.quantity > item.qtyToPick) {
     return res.status(400).json({ error: `Cannot pick more than the ${item.qtyToPick} allocated for this item` });
   }
+
+  // A partial pick (picked less than qtyToPick) closes *this* task honestly
+  // — qtyToPick/qtyPicked stay as "planned vs. actually found here" — but
+  // must never silently mark the order as fully picked. The shortfall gets
+  // its own follow-up PENDING row so it stays visible in the pick list
+  // (and therefore keeps the order out of LOADED) until it's resolved.
+  const shortfall = item.qtyToPick - parsed.data.quantity;
 
   try {
     const orderId = await prisma.$transaction(async (tx) => {
@@ -109,12 +116,39 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
         await tx.orderLine.update({ where: { id: orderLine.id }, data: { qtyPicked: { increment: parsed.data.quantity } } });
       }
 
+      if (shortfall > 0) {
+        const maxSequence = await tx.pickListItem.aggregate({ where: { orderId: item.orderId }, _max: { sequence: true } });
+        await tx.pickListItem.create({
+          data: {
+            orderId: item.orderId,
+            skuId: item.skuId,
+            locationId: item.locationId,
+            batchId: item.batchId,
+            sequence: (maxSequence._max.sequence ?? item.sequence) + 1,
+            qtyToPick: shortfall,
+            status: "PENDING",
+            isShortfallFollowup: true,
+            note: `Shortfall follow-up — only ${parsed.data.quantity} of ${item.qtyToPick} ${item.sku.unit} found at ${item.location.code}`,
+          },
+        });
+      }
+
       const remaining = await tx.pickListItem.count({ where: { orderId: item.orderId, status: { not: "PICKED" } } });
       if (remaining === 0) {
         await tx.order.update({ where: { id: item.orderId }, data: { status: "LOADED", loadedAt: new Date() } });
       }
       return item.orderId;
     });
+
+    if (shortfall > 0) {
+      await recordAudit({
+        userId: req.user!.id,
+        action: "PICK_SHORTFALL",
+        entityType: "PickListItem",
+        entityId: item.id,
+        after: { orderId: item.orderId, skuId: item.skuId, skuCode: item.sku.code, requested: item.qtyToPick, picked: parsed.data.quantity, shortfall },
+      });
+    }
 
     await recordAudit({
       userId: req.user!.id,
