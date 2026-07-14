@@ -16,6 +16,7 @@ export default function PickingSession() {
   const [qty, setQty] = useState("");
   const [online, setOnline] = useState(navigator.onLine);
   const [pending, setPending] = useState(0);
+  const [busy, setBusy] = useState(false);
 
   const refreshPending = useCallback(() => {
     pendingCount().then(setPending);
@@ -74,34 +75,37 @@ export default function PickingSession() {
   }
 
   async function handleScanLocation(text: string) {
-    if (!currentItem) return;
+    if (!currentItem || busy) return;
     setScannerTarget(null);
     if (text !== currentItem.location.code) {
       setError(`Wrong location — expected ${currentItem.location.code}, scanned ${text}`);
       return;
     }
     setError(null);
-    if (navigator.onLine) {
-      try {
+    setBusy(true);
+    try {
+      if (navigator.onLine) {
         await api.post(`/picking/items/${currentItem.id}/scan-location`, { locationCode: text });
         updateLocal(currentItem.id, { status: "LOCATION_CONFIRMED" });
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Scan failed");
+      } else {
+        updateLocal(currentItem.id, { status: "LOCATION_CONFIRMED" });
+        await enqueueAction({
+          type: "scan-location",
+          path: `/picking/items/${currentItem.id}/scan-location`,
+          payload: { locationCode: text },
+          orderId,
+          itemId: currentItem.id,
+        });
       }
-    } else {
-      updateLocal(currentItem.id, { status: "LOCATION_CONFIRMED" });
-      await enqueueAction({
-        type: "scan-location",
-        path: `/picking/items/${currentItem.id}/scan-location`,
-        payload: { locationCode: text },
-        orderId,
-        itemId: currentItem.id,
-      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Scan failed");
+    } finally {
+      setBusy(false);
     }
   }
 
   async function handleScanSku(text: string) {
-    if (!currentItem) return;
+    if (!currentItem || busy) return;
     setScannerTarget(null);
     const skuMatch = /SKU:([^|]+)/.exec(text);
     const scannedCode = skuMatch ? skuMatch[1] : text;
@@ -110,50 +114,57 @@ export default function PickingSession() {
       return;
     }
     setError(null);
-    if (navigator.onLine) {
-      try {
+    setBusy(true);
+    try {
+      if (navigator.onLine) {
         await api.post(`/picking/items/${currentItem.id}/scan-sku`, { label: text });
         updateLocal(currentItem.id, { status: "SKU_CONFIRMED" });
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Scan failed");
+      } else {
+        updateLocal(currentItem.id, { status: "SKU_CONFIRMED" });
+        await enqueueAction({
+          type: "scan-sku",
+          path: `/picking/items/${currentItem.id}/scan-sku`,
+          payload: { label: text },
+          orderId,
+          itemId: currentItem.id,
+        });
       }
-    } else {
-      updateLocal(currentItem.id, { status: "SKU_CONFIRMED" });
-      await enqueueAction({
-        type: "scan-sku",
-        path: `/picking/items/${currentItem.id}/scan-sku`,
-        payload: { label: text },
-        orderId,
-        itemId: currentItem.id,
-      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Scan failed");
+    } finally {
+      setBusy(false);
     }
   }
 
   async function handleConfirm() {
-    if (!currentItem) return;
+    if (!currentItem || busy) return;
     const quantity = Number(qty || currentItem.qtyToPick);
     if (quantity <= 0 || quantity > currentItem.qtyToPick) {
       setError(`Quantity must be between 1 and ${currentItem.qtyToPick}`);
       return;
     }
     setError(null);
-    setQty("");
-    if (navigator.onLine) {
-      try {
+    setBusy(true);
+    try {
+      if (navigator.onLine) {
         await api.post(`/picking/items/${currentItem.id}/confirm`, { quantity });
-        loadFromServer();
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Confirm failed");
+        setQty("");
+        await loadFromServer();
+      } else {
+        setQty("");
+        updateLocal(currentItem.id, { status: "PICKED", qtyPicked: quantity });
+        await enqueueAction({
+          type: "confirm-pick",
+          path: `/picking/items/${currentItem.id}/confirm`,
+          payload: { quantity },
+          orderId,
+          itemId: currentItem.id,
+        });
       }
-    } else {
-      updateLocal(currentItem.id, { status: "PICKED", qtyPicked: quantity });
-      await enqueueAction({
-        type: "confirm-pick",
-        path: `/picking/items/${currentItem.id}/confirm`,
-        payload: { quantity },
-        orderId,
-        itemId: currentItem.id,
-      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Confirm failed");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -203,18 +214,20 @@ export default function PickingSession() {
           {currentItem.status === "PENDING" && (
             <button
               onClick={() => setScannerTarget("location")}
-              className="w-full rounded-xl bg-slate-900 px-4 py-4 text-lg font-semibold text-white dark:bg-slate-100 dark:text-slate-900"
+              disabled={busy}
+              className="w-full rounded-xl bg-slate-900 px-4 py-4 text-lg font-semibold text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
             >
-              Scan location
+              {busy ? "Working…" : "Scan location"}
             </button>
           )}
 
           {currentItem.status === "LOCATION_CONFIRMED" && (
             <button
               onClick={() => setScannerTarget("sku")}
-              className="w-full rounded-xl bg-slate-900 px-4 py-4 text-lg font-semibold text-white dark:bg-slate-100 dark:text-slate-900"
+              disabled={busy}
+              className="w-full rounded-xl bg-slate-900 px-4 py-4 text-lg font-semibold text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
             >
-              Scan item label
+              {busy ? "Working…" : "Scan item label"}
             </button>
           )}
 
@@ -226,11 +239,16 @@ export default function PickingSession() {
                 max={currentItem.qtyToPick}
                 placeholder={String(currentItem.qtyToPick)}
                 value={qty}
+                disabled={busy}
                 onChange={(e) => setQty(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-center text-2xl font-bold outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-center text-2xl font-bold outline-none focus:border-slate-500 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
-              <button onClick={handleConfirm} className="w-full rounded-xl bg-green-600 px-4 py-4 text-lg font-semibold text-white">
-                Confirm pick
+              <button
+                onClick={handleConfirm}
+                disabled={busy}
+                className="w-full rounded-xl bg-green-600 px-4 py-4 text-lg font-semibold text-white disabled:opacity-50"
+              >
+                {busy ? "Confirming…" : "Confirm pick"}
               </button>
             </div>
           )}

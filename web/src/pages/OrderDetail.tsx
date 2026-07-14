@@ -25,6 +25,8 @@ export default function OrderDetail() {
   const [headerDraft, setHeaderDraft] = useState({ buyerName: "", buyerContact: "", vehicleCapacityNote: "" });
   const [editingHeader, setEditingHeader] = useState(false);
   const [addItemSkuId, setAddItemSkuId] = useState("");
+  const [addingLine, setAddingLine] = useState(false);
+  const [removingLineId, setRemovingLineId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -71,34 +73,40 @@ export default function OrderDetail() {
   // own lock point (PATCH /orders/:id rejects LOADED/INVOICED/CANCELLED).
   const isEditable = isDraft || isFinalized;
 
+  // Left to throw — FinalQtyCell owns the Save button for this field and
+  // shows its own per-field saving/success/error state (see #1: an onBlur
+  // auto-save with no visible Save action and no confirmation of success
+  // or failure isn't good enough).
   async function updateFinalQty(lineId: string, qtyFinalized: number) {
-    setError(null);
-    try {
-      await api.patch(`/orders/${id}`, { lines: [{ id: lineId, qtyFinalized }] });
-      load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to update quantity");
-    }
+    await api.patch(`/orders/${id}`, { lines: [{ id: lineId, qtyFinalized }] });
+    await load();
   }
 
   async function removeLine(lineId: string) {
+    if (removingLineId) return;
     setError(null);
+    setRemovingLineId(lineId);
     try {
       await api.patch(`/orders/${id}`, { lines: [{ id: lineId, remove: true }] });
-      load();
+      await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to remove line");
+    } finally {
+      setRemovingLineId(null);
     }
   }
 
   async function addLine(skuId: string) {
-    if (!skuId) return;
+    if (!skuId || addingLine) return;
     setError(null);
+    setAddingLine(true);
     try {
       await api.patch(`/orders/${id}`, { lines: [{ skuId, qtyRequested: 1 }] });
-      load();
+      await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to add item");
+    } finally {
+      setAddingLine(false);
     }
   }
 
@@ -254,16 +262,7 @@ export default function OrderDetail() {
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{line.qtyRequested}</td>
                   <td className="px-4 py-2">
                     {isEditable && canEdit ? (
-                      <input
-                        type="number"
-                        min={0}
-                        defaultValue={finalQty}
-                        onBlur={(e) => {
-                          const v = Number(e.target.value);
-                          if (v >= 0 && v !== finalQty) updateFinalQty(line.id, v);
-                        }}
-                        className="w-20 rounded border border-slate-300 px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
-                      />
+                      <FinalQtyCell finalQty={finalQty} onSave={(v) => updateFinalQty(line.id, v)} />
                     ) : (
                       finalQty
                     )}
@@ -280,8 +279,12 @@ export default function OrderDetail() {
                   {canSeePrice && !isDraft && <td className="px-4 py-2">{line.unitPrice != null ? `₹${line.unitPrice}` : "—"}</td>}
                   {isEditable && canEdit && (
                     <td className="px-4 py-2">
-                      <button onClick={() => removeLine(line.id)} className="text-slate-400 hover:text-red-600">
-                        ✕
+                      <button
+                        onClick={() => removeLine(line.id)}
+                        disabled={removingLineId === line.id}
+                        className="text-slate-400 hover:text-red-600 disabled:opacity-50"
+                      >
+                        {removingLineId === line.id ? "…" : "✕"}
                       </button>
                     </td>
                   )}
@@ -301,6 +304,7 @@ export default function OrderDetail() {
           <SkuCombobox
             skus={skus}
             value={addItemSkuId}
+            disabled={addingLine}
             onChange={(skuId) => {
               setAddItemSkuId(skuId);
               if (skuId) {
@@ -308,7 +312,7 @@ export default function OrderDetail() {
                 setAddItemSkuId("");
               }
             }}
-            placeholder="+ Add item… search by code or name"
+            placeholder={addingLine ? "Adding…" : "+ Add item… search by code or name"}
           />
         </div>
       )}
@@ -359,6 +363,95 @@ export default function OrderDetail() {
           Cancel order
         </button>
       )}
+    </div>
+  );
+}
+
+// Explicit edit -> Save/Cancel for the one editable quantity field, instead
+// of an onBlur auto-save with no visible action and no feedback on whether
+// it actually worked (see round 3 bug #1). Mirrors the same inline-edit
+// pattern already used for SKU and Location master rows.
+function FinalQtyCell({ finalQty, onSave }: { finalQty: number; onSave: (qty: number) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(finalQty));
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setValue(String(finalQty));
+  }, [finalQty]);
+
+  async function handleSave() {
+    const v = Number(value);
+    if (!(v >= 0)) {
+      setError("Enter a valid quantity");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(v);
+      setEditing(false);
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2">
+        <span>{finalQty}</span>
+        <button
+          onClick={() => {
+            setEditing(true);
+            setSaved(false);
+            setValue(String(finalQty));
+          }}
+          className="text-xs font-medium text-blue-600 underline dark:text-blue-400"
+        >
+          Edit
+        </button>
+        {saved && <span className="text-xs text-green-600 dark:text-green-400">Saved ✓</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          value={value}
+          disabled={saving}
+          onChange={(e) => setValue(e.target.value)}
+          className="w-20 rounded border border-slate-300 px-2 py-1 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800"
+        />
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => {
+            setEditing(false);
+            setValue(String(finalQty));
+            setError(null);
+          }}
+          className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-slate-700"
+        >
+          Cancel
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
   );
 }

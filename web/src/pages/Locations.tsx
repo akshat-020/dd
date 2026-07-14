@@ -227,6 +227,7 @@ function LocationRow({ location, canEdit, onChanged }: { location: Location; can
   const [error, setError] = useState<string | null>(null);
   const [deactivateOffer, setDeactivateOffer] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -244,9 +245,10 @@ function LocationRow({ location, canEdit, onChanged }: { location: Location; can
   }
 
   async function handleDelete() {
-    if (!confirm(`Delete location ${location.code}?`)) return;
+    if (deleting || !confirm(`Delete location ${location.code}?`)) return;
     setError(null);
     setDeactivateOffer(false);
+    setDeleting(true);
     try {
       await api.delete(`/locations/${location.id}`);
       onChanged();
@@ -257,17 +259,23 @@ function LocationRow({ location, canEdit, onChanged }: { location: Location; can
       } else {
         setError("Failed to delete location");
       }
+    } finally {
+      setDeleting(false);
     }
   }
 
   async function handleDeactivate() {
+    if (deleting) return;
     setError(null);
     setDeactivateOffer(false);
+    setDeleting(true);
     try {
       await api.patch(`/locations/${location.id}`, { active: false });
       onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to deactivate location");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -314,11 +322,11 @@ function LocationRow({ location, canEdit, onChanged }: { location: Location; can
               </form>
             ) : (
               <div className="flex gap-2">
-                <button onClick={() => setEditing(true)} className="text-xs font-medium text-blue-600 underline dark:text-blue-400">
+                <button onClick={() => setEditing(true)} disabled={deleting} className="text-xs font-medium text-blue-600 underline disabled:opacity-50 dark:text-blue-400">
                   Edit
                 </button>
-                <button onClick={handleDelete} className="text-xs font-medium text-red-600 underline dark:text-red-400">
-                  Delete
+                <button onClick={handleDelete} disabled={deleting} className="text-xs font-medium text-red-600 underline disabled:opacity-50 dark:text-red-400">
+                  {deleting ? "Deleting…" : "Delete"}
                 </button>
               </div>
             )}
@@ -330,8 +338,8 @@ function LocationRow({ location, canEdit, onChanged }: { location: Location; can
           <td colSpan={canEdit ? 6 : 5} className="bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
             {error}
             {deactivateOffer && (
-              <button onClick={handleDeactivate} className="ml-2 font-medium underline">
-                Deactivate instead
+              <button onClick={handleDeactivate} disabled={deleting} className="ml-2 font-medium underline disabled:opacity-50">
+                {deleting ? "Deactivating…" : "Deactivate instead"}
               </button>
             )}
           </td>

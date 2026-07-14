@@ -10,6 +10,10 @@ export default function Users() {
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "SALES" as Role });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Tracks which specific user+field toggle is mid-flight (e.g.
+  // "userId:active"), so only that one button disables — and a rapid
+  // double-click can't fire the same PATCH twice.
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
 
   function load() {
     api
@@ -36,23 +40,19 @@ export default function Users() {
     }
   }
 
-  async function toggleActive(user: User) {
-    await api.patch(`/users/${user.id}`, { active: !user.active });
-    load();
-  }
-
-  // Owner-only grant/revoke of the scan-based putaway/pick add-on — this
-  // route is already gated to Owner server-side, and every change is
-  // recorded in the audit log (GRANT_SCAN_ACCESS / REVOKE_SCAN_ACCESS).
-  async function toggleScanAccess(user: User) {
-    await api.patch(`/users/${user.id}`, { canScanPutaway: !user.canScanPutaway });
-    load();
-  }
-
-  // Same pattern for inward-entry access (defaults on for Sales, revocable).
-  async function toggleInwardEntryAccess(user: User) {
-    await api.patch(`/users/${user.id}`, { canLogInwardEntry: !user.canLogInwardEntry });
-    load();
+  async function toggleField(user: User, field: "active" | "canScanPutaway" | "canLogInwardEntry") {
+    const key = `${user.id}:${field}`;
+    if (togglingKey) return;
+    setTogglingKey(key);
+    setError(null);
+    try {
+      await api.patch(`/users/${user.id}`, { [field]: !user[field] });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update user");
+    } finally {
+      setTogglingKey(null);
+    }
   }
 
   return (
@@ -122,36 +122,39 @@ export default function Users() {
               {u.role === "SALES" && (
                 <>
                   <button
-                    onClick={() => toggleScanAccess(u)}
+                    onClick={() => toggleField(u, "canScanPutaway")}
+                    disabled={togglingKey === `${u.id}:canScanPutaway`}
                     title="Scan-based putaway/pick — an add-on permission, not a role"
-                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    className={`rounded-full px-3 py-1 text-xs font-medium disabled:opacity-50 ${
                       u.canScanPutaway
                         ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
                         : "bg-slate-100 text-slate-500 dark:bg-slate-800"
                     }`}
                   >
-                    Scan access: {u.canScanPutaway ? "On" : "Off"}
+                    Scan access: {togglingKey === `${u.id}:canScanPutaway` ? "…" : u.canScanPutaway ? "On" : "Off"}
                   </button>
                   <button
-                    onClick={() => toggleInwardEntryAccess(u)}
+                    onClick={() => toggleField(u, "canLogInwardEntry")}
+                    disabled={togglingKey === `${u.id}:canLogInwardEntry`}
                     title="Log inward stock entries — on by default for Sales, revocable"
-                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    className={`rounded-full px-3 py-1 text-xs font-medium disabled:opacity-50 ${
                       u.canLogInwardEntry
                         ? "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
                         : "bg-slate-100 text-slate-500 dark:bg-slate-800"
                     }`}
                   >
-                    Inward entry: {u.canLogInwardEntry ? "On" : "Off"}
+                    Inward entry: {togglingKey === `${u.id}:canLogInwardEntry` ? "…" : u.canLogInwardEntry ? "On" : "Off"}
                   </button>
                 </>
               )}
               <button
-                onClick={() => toggleActive(u)}
-                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                onClick={() => toggleField(u, "active")}
+                disabled={togglingKey === `${u.id}:active`}
+                className={`rounded-full px-3 py-1 text-xs font-medium disabled:opacity-50 ${
                   u.active ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800"
                 }`}
               >
-                {u.active ? "Active" : "Disabled"}
+                {togglingKey === `${u.id}:active` ? "…" : u.active ? "Active" : "Disabled"}
               </button>
             </div>
           </li>

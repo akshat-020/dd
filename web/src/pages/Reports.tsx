@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { AuditLogEntry } from "../api/types";
@@ -11,6 +11,7 @@ interface StockOnHandRow {
   locationId: string;
   locationCode: string;
   quantity: number;
+  batches: { batchId: string | null; batchCode: string | null; receivedDate: string | null; quantity: number }[];
 }
 
 interface TurnaroundRow {
@@ -81,18 +82,7 @@ export default function Reports() {
         ))}
       </div>
 
-      {tab === "stock" && (
-        <Table
-          rows={stock}
-          columns={[
-            { key: "skuCode", label: "SKU" },
-            { key: "skuName", label: "Name" },
-            { key: "locationCode", label: "Location" },
-            { key: "quantity", label: "Qty" },
-            { key: "unit", label: "Unit" },
-          ]}
-        />
-      )}
+      {tab === "stock" && <StockOnHandTable rows={stock} />}
 
       {tab === "turnaround" && (
         <Table
@@ -133,6 +123,69 @@ export default function Reports() {
           {audit.length === 0 && <li className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">No audit entries yet.</li>}
         </ul>
       )}
+    </div>
+  );
+}
+
+// One row per (SKU, location) — the "how much of this do I have" figure —
+// with per-batch detail (batch code, received date, qty) as an expandable
+// drill-down underneath, rather than fragmenting the top-level list into a
+// separate row per batch (see round 3 bug #3).
+function StockOnHandTable({ rows }: { rows: StockOnHandRow[] }) {
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      <table className="w-full text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          <tr>
+            <th className="px-4 py-2 whitespace-nowrap">SKU</th>
+            <th className="px-4 py-2 whitespace-nowrap">Name</th>
+            <th className="px-4 py-2 whitespace-nowrap">Location</th>
+            <th className="px-4 py-2 whitespace-nowrap">Qty</th>
+            <th className="px-4 py-2 whitespace-nowrap">Unit</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          {rows.map((row) => {
+            const key = `${row.skuId}|${row.locationId}`;
+            const expanded = expandedKey === key;
+            const multiBatch = row.batches.length > 1;
+            return (
+              <Fragment key={key}>
+                <tr
+                  onClick={multiBatch ? () => setExpandedKey(expanded ? null : key) : undefined}
+                  className={multiBatch ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}
+                >
+                  <td className="px-4 py-2 whitespace-nowrap">{row.skuCode}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">{row.skuName}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">{row.locationCode}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">
+                    {row.quantity}
+                    {multiBatch && <span className="ml-1 text-xs text-slate-400">({row.batches.length} batches {expanded ? "▲" : "▼"})</span>}
+                  </td>
+                  <td className="px-4 py-2 whitespace-nowrap">{row.unit}</td>
+                </tr>
+                {expanded && (
+                  <tr>
+                    <td colSpan={5} className="bg-slate-50 px-4 py-2 dark:bg-slate-800">
+                      <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                        {row.batches.map((b, idx) => (
+                          <li key={b.batchId ?? idx}>
+                            {b.batchCode ?? "No batch"} — {b.quantity} {row.unit}
+                            {b.receivedDate ? ` (received ${new Date(b.receivedDate).toLocaleDateString()})` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      {rows.length === 0 && <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">No data.</p>}
     </div>
   );
 }

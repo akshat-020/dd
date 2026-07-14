@@ -153,6 +153,7 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
 function SessionsSection() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null); // "all" for revokeAllOthers
 
   function load() {
     api.get<Session[]>("/sessions/mine").then(setSessions).catch((e) => setError(e.message));
@@ -161,13 +162,31 @@ function SessionsSection() {
   useEffect(load, []);
 
   async function revoke(id: string) {
-    await api.post(`/sessions/${id}/revoke`);
-    load();
+    if (busyId) return;
+    setBusyId(id);
+    setError(null);
+    try {
+      await api.post(`/sessions/${id}/revoke`);
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to sign out that session");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function revokeAllOthers() {
-    await api.post("/sessions/revoke-all-mine");
-    load();
+    if (busyId) return;
+    setBusyId("all");
+    setError(null);
+    try {
+      await api.post("/sessions/revoke-all-mine");
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to sign out other sessions");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   return (
@@ -175,8 +194,8 @@ function SessionsSection() {
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-base font-semibold text-slate-900 dark:text-slate-50">Your active sessions</h2>
         {sessions.length > 1 && (
-          <button onClick={revokeAllOthers} className="text-xs font-medium text-red-600 underline dark:text-red-400">
-            Sign out everywhere else
+          <button onClick={revokeAllOthers} disabled={!!busyId} className="text-xs font-medium text-red-600 underline disabled:opacity-50 dark:text-red-400">
+            {busyId === "all" ? "Signing out…" : "Sign out everywhere else"}
           </button>
         )}
       </div>
@@ -195,8 +214,8 @@ function SessionsSection() {
               <div className="text-xs text-slate-400">Last active {new Date(s.lastSeenAt).toLocaleString()}</div>
             </div>
             {!s.current && (
-              <button onClick={() => revoke(s.id)} className="text-xs font-medium text-red-600 underline dark:text-red-400">
-                Sign out
+              <button onClick={() => revoke(s.id)} disabled={!!busyId} className="text-xs font-medium text-red-600 underline disabled:opacity-50 dark:text-red-400">
+                {busyId === s.id ? "Signing out…" : "Sign out"}
               </button>
             )}
           </li>
@@ -209,6 +228,7 @@ function SessionsSection() {
 function AllSessionsSection() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   function load() {
     api.get<Session[]>("/sessions").then(setSessions).catch((e) => setError(e.message));
@@ -217,8 +237,17 @@ function AllSessionsSection() {
   useEffect(load, []);
 
   async function revoke(id: string) {
-    await api.post(`/sessions/${id}/revoke`);
-    load();
+    if (busyId) return;
+    setBusyId(id);
+    setError(null);
+    try {
+      await api.post(`/sessions/${id}/revoke`);
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to revoke that session");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   return (
@@ -240,8 +269,8 @@ function AllSessionsSection() {
                 {s.userAgent ? s.userAgent.slice(0, 50) : "Unknown device"} · Last active {new Date(s.lastSeenAt).toLocaleString()}
               </div>
             </div>
-            <button onClick={() => revoke(s.id)} className="text-xs font-medium text-red-600 underline dark:text-red-400">
-              Revoke
+            <button onClick={() => revoke(s.id)} disabled={!!busyId} className="text-xs font-medium text-red-600 underline disabled:opacity-50 dark:text-red-400">
+              {busyId === s.id ? "Revoking…" : "Revoke"}
             </button>
           </li>
         ))}

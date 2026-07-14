@@ -9,12 +9,13 @@ interface Props {
   // Optional per-SKU quantity to show alongside each match (e.g. "12 in stock").
   quantities?: Map<string, number>;
   className?: string;
+  disabled?: boolean;
 }
 
 // Search-as-you-type SKU picker — replaces plain <select> dropdowns, which
 // become unusable once there are more than a couple dozen SKUs. Filters by
 // code or name substring, case-insensitive.
-export function SkuCombobox({ skus, value, onChange, placeholder = "Search SKU by code or name…", quantities, className }: Props) {
+export function SkuCombobox({ skus, value, onChange, placeholder = "Search SKU by code or name…", quantities, className, disabled }: Props) {
   const selected = skus.find((s) => s.id === value) ?? null;
   const [query, setQuery] = useState(selected ? `${selected.code} — ${selected.name}` : "");
   const [open, setOpen] = useState(false);
@@ -57,6 +58,7 @@ export function SkuCombobox({ skus, value, onChange, placeholder = "Search SKU b
     <div ref={containerRef} className={`relative ${className ?? ""}`}>
       <input
         value={query}
+        disabled={disabled}
         onChange={(e) => {
           setQuery(e.target.value);
           setOpen(true);
@@ -80,7 +82,7 @@ export function SkuCombobox({ skus, value, onChange, placeholder = "Search SKU b
           }
         }}
         placeholder={placeholder}
-        className="w-full rounded-lg border border-slate-300 px-3 py-3 text-base outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        className="w-full rounded-lg border border-slate-300 px-3 py-3 text-base outline-none focus:border-slate-500 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
       />
       {open && matches.length > 0 && (
         <ul className="absolute z-10 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800">

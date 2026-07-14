@@ -93,6 +93,7 @@ export default function Pricing() {
   }
 
   async function handleCancel(refId: string) {
+    if (busy) return;
     const reverseStock = confirm("Were goods actually returned? OK = reverse stock, Cancel = paperwork-only void.");
     setBusy(true);
     setError(null);
@@ -107,6 +108,7 @@ export default function Pricing() {
   }
 
   async function handleAdjust(refId: string, lineId: string, currentQty: number, currentPrice: number) {
+    if (busy) return;
     const qtyStr = prompt("New quantity", String(currentQty));
     if (qtyStr === null) return;
     const priceStr = prompt("New price", String(currentPrice));
@@ -177,7 +179,7 @@ export default function Pricing() {
             </tbody>
           </table>
           <button type="submit" disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-2 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
-            Save pricing
+            {busy ? "Saving…" : "Save pricing"}
           </button>
         </form>
       )}
@@ -188,12 +190,13 @@ export default function Pricing() {
           <div className="flex gap-2">
             <input
               value={tallyNumber}
+              disabled={busy}
               onChange={(e) => setTallyNumber(e.target.value)}
               placeholder="Tally invoice number"
-              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
             <button type="submit" disabled={busy} className="rounded-lg bg-slate-900 px-4 py-2 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
-              Add
+              {busy ? "Adding…" : "Add"}
             </button>
           </div>
         </form>
@@ -225,16 +228,20 @@ export default function Pricing() {
                       {l.sku?.code ?? l.skuId} · {l.qty} × ₹{l.price}
                     </span>
                     {ref.status !== "CANCELLED" && (
-                      <button onClick={() => handleAdjust(ref.id, l.id, l.qty, l.price)} className="text-xs underline">
-                        Adjust
+                      <button onClick={() => handleAdjust(ref.id, l.id, l.qty, l.price)} disabled={busy} className="text-xs underline disabled:opacity-50">
+                        {busy ? "Working…" : "Adjust"}
                       </button>
                     )}
                   </li>
                 ))}
               </ul>
               {ref.status !== "CANCELLED" && (
-                <button onClick={() => handleCancel(ref.id)} className="mt-3 rounded-lg border border-red-300 px-3 py-1 text-xs font-medium text-red-600 dark:border-red-800 dark:text-red-400">
-                  Cancel invoice reference
+                <button
+                  onClick={() => handleCancel(ref.id)}
+                  disabled={busy}
+                  className="mt-3 rounded-lg border border-red-300 px-3 py-1 text-xs font-medium text-red-600 disabled:opacity-50 dark:border-red-800 dark:text-red-400"
+                >
+                  {busy ? "Working…" : "Cancel invoice reference"}
                 </button>
               )}
             </div>

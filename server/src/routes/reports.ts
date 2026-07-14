@@ -10,23 +10,62 @@ reportsRouter.use(requireAuth);
 
 // Stock-on-hand by SKU and by location, at the current point in time.
 // General inventory browsing — excluded from Warehouse's task-scoped view.
+//
+// StockItem has one row per (sku, location, batch) — receiving the same
+// SKU as two separate batches creates two separate StockItem rows even
+// though it's physically the same shelf-level quantity from a "how much
+// of this do I have" point of view. This aggregates to one row per
+// (sku, location) for that top-level view, and keeps the batch-level
+// detail (still needed for traceability/FEFO) nested underneath for an
+// expandable drill-down rather than fragmenting the main list.
 reportsRouter.get("/stock-on-hand", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
   const items = await prisma.stockItem.findMany({
     where: { quantity: { gt: 0 } },
-    include: { sku: true, location: true },
+    include: { sku: true, location: true, batch: true },
     orderBy: [{ sku: { name: "asc" } }, { location: { code: "asc" } }],
   });
-  res.json(
-    items.map((i) => ({
-      skuId: i.skuId,
-      skuCode: i.sku.code,
-      skuName: i.sku.name,
-      unit: i.sku.unit,
-      locationId: i.locationId,
-      locationCode: i.location.code,
+
+  const grouped = new Map<
+    string,
+    {
+      skuId: string;
+      skuCode: string;
+      skuName: string;
+      unit: string;
+      locationId: string;
+      locationCode: string;
+      quantity: number;
+      batches: { batchId: string | null; batchCode: string | null; receivedDate: string | null; quantity: number }[];
+    }
+  >();
+
+  for (const i of items) {
+    const key = `${i.skuId}|${i.locationId}`;
+    const existing = grouped.get(key);
+    const batchEntry = {
+      batchId: i.batchId,
+      batchCode: i.batch?.batchCode ?? null,
+      receivedDate: i.batch?.receivedDate?.toISOString() ?? null,
       quantity: i.quantity,
-    }))
-  );
+    };
+    if (existing) {
+      existing.quantity += i.quantity;
+      existing.batches.push(batchEntry);
+    } else {
+      grouped.set(key, {
+        skuId: i.skuId,
+        skuCode: i.sku.code,
+        skuName: i.sku.name,
+        unit: i.sku.unit,
+        locationId: i.locationId,
+        locationCode: i.location.code,
+        quantity: i.quantity,
+        batches: [batchEntry],
+      });
+    }
+  }
+
+  res.json(Array.from(grouped.values()));
 });
 
 // Order fulfillment turnaround: received -> loaded -> invoiced.
