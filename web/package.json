@@ -1,33 +1,22 @@
 {
-  "name": "web",
+  "name": "oms-erp",
   "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "dexie": "^4.4.4",
-    "qr-scanner": "^1.4.2",
-    "qrcode": "^1.5.4",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "react-router-dom": "^7.18.1"
+    "setup": "npm install && cp -n server/.env.example server/.env && npm run --workspace server prisma:generate && npm run --workspace server prisma:deploy && npm run --workspace server seed",
+    "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace server",
+    "dev:web": "npm run dev --workspace web -- --host",
+    "build:server": "npm run build --workspace server",
+    "build:web": "npm run build --workspace web",
+    "build": "npm run build:server && npm run build:web",
+    "start": "npm run --workspace server prisma:deploy && node server/dist/index.js",
+    "test:server": "npm run test --workspace server"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.2",
-    "@types/node": "^24.13.2",
-    "@types/qrcode": "^1.5.6",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.3",
-    "oxlint": "^1.71.0",
-    "tailwindcss": "^4.3.2",
-    "typescript": "~6.0.2",
-    "vite": "^8.1.1",
-    "vite-plugin-pwa": "^1.3.0"
+    "concurrently": "^10.0.3"
   }
 }
