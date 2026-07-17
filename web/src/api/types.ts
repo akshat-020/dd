@@ -319,3 +319,34 @@ export interface ProformaInvoice {
   createdAt: string;
   lines: ProformaInvoiceLine[];
 }
+
+// Bulk SKU import (add + update in one pass, matched by SKU code) — see
+// POST /skus/bulk/preview and /commit.
+export interface SkuBulkRowResult {
+  rowNumber: number;
+  code: string | null;
+  action: "create" | "update" | "error";
+  errors: string[];
+  // Present only for "update" — fields that would actually change, keyed
+  // by field name. Blank cells left out of the file entirely aren't here
+  // (they mean "leave unchanged", not "clear this field").
+  changes?: Record<string, { from: unknown; to: unknown }>;
+  requiresConfirmation?: boolean;
+  confirmationMessage?: string;
+}
+
+export interface SkuBulkPreviewResponse {
+  rows: SkuBulkRowResult[];
+  summary: { toCreate: number; toUpdate: number; needsConfirmation: number; errors: number };
+}
+
+export interface SkuBulkCommitRowResult extends SkuBulkRowResult {
+  status: "created" | "updated" | "unchanged" | "skipped";
+}
+
+export interface SkuBulkCommitResponse {
+  created: number;
+  updated: number;
+  skipped: number;
+  rows: SkuBulkCommitRowResult[];
+}

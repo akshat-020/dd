@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import type { PurchaseCostReference, Sku, SkuBatch, StockSummaryEntry } from "../api/types";
 import { compoundBreakdown } from "../lib/units";
 import { LabelPrintPanel } from "../components/LabelPrintPanel";
+import { BulkSkuImport } from "../components/BulkSkuImport";
 
 export default function SkusPage() {
   const { hasRole } = useAuth();
@@ -15,6 +16,7 @@ export default function SkusPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
   const [form, setForm] = useState({ code: "", name: "", unit: "", category: "", reorderThreshold: "0", altUnitName: "", altUnitFactor: "" });
   const [submitting, setSubmitting] = useState(false);
 
@@ -68,12 +70,26 @@ export default function SkusPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">SKU Master</h1>
         {canEdit && (
-          <button
-            onClick={() => setShowForm((v) => !v)}
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
-          >
-            {showForm ? "Cancel" : "+ Add SKU"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setShowBulkImport((v) => !v);
+                setShowForm(false);
+              }}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300"
+            >
+              {showBulkImport ? "Cancel" : "Bulk add / update"}
+            </button>
+            <button
+              onClick={() => {
+                setShowForm((v) => !v);
+                setShowBulkImport(false);
+              }}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
+            >
+              {showForm ? "Cancel" : "+ Add SKU"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -121,6 +137,8 @@ export default function SkusPage() {
           </button>
         </form>
       )}
+
+      {showBulkImport && <BulkSkuImport onImported={load} />}
 
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <table className="w-full text-left text-sm">

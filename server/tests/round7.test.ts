@@ -103,6 +103,47 @@ describe("#2 order book default filtering", () => {
   });
 });
 
+describe("#3 rack-to-rack transfer — batch selection", () => {
+  it("reports the batch breakdown at a location, and a transfer with no batchId fails against a multi-batch location instead of silently moving 0", async () => {
+    const sku = await prisma.sku.create({ data: { code: "R7-SKU-3", name: "Round7 Transfer Widget", unit: "bag" } });
+    const locA = await prisma.location.create({ data: { code: "R7-LOC-3A", zone: "R7", rack: "03A" } });
+    const locB = await prisma.location.create({ data: { code: "R7-LOC-3B", zone: "R7", rack: "03B" } });
+
+    // Same SKU received in two separate batches, both shelved at locA — no
+    // "total" bucket exists; each batch is its own StockItem row.
+    const batch1 = await prisma.skuBatch.create({ data: { skuId: sku.id, batchCode: "R7-BATCH-1", sourceType: "PURCHASE" } });
+    const batch2 = await prisma.skuBatch.create({ data: { skuId: sku.id, batchCode: "R7-BATCH-2", sourceType: "PURCHASE" } });
+    await request(app).post("/api/stock/putaway").set(auth(warehouse.token)).send({ skuId: sku.id, locationId: locA.id, batchId: batch1.id, quantity: 100 });
+    await request(app).post("/api/stock/putaway").set(auth(warehouse.token)).send({ skuId: sku.id, locationId: locA.id, batchId: batch2.id, quantity: 50 });
+
+    const breakdown = await request(app).get(`/api/stock/at-location/${locA.id}/sku/${sku.id}`).set(auth(warehouse.token));
+    expect(breakdown.status).toBe(200);
+    expect(breakdown.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ batchId: batch1.id, batchCode: "R7-BATCH-1", quantity: 100 }),
+        expect.objectContaining({ batchId: batch2.id, batchCode: "R7-BATCH-2", quantity: 50 }),
+      ])
+    );
+
+    // Omitting batchId targets the "no batch" bucket, which is empty here —
+    // this must fail clearly (409), not report success while moving nothing.
+    const noBatchTransfer = await request(app)
+      .post("/api/stock/transfer")
+      .set(auth(warehouse.token))
+      .send({ skuId: sku.id, fromLocationId: locA.id, toLocationId: locB.id, quantity: 10 });
+    expect(noBatchTransfer.status).toBe(409);
+
+    // Specifying the correct batchId succeeds.
+    const withBatch = await request(app)
+      .post("/api/stock/transfer")
+      .set(auth(warehouse.token))
+      .send({ skuId: sku.id, batchId: batch1.id, fromLocationId: locA.id, toLocationId: locB.id, quantity: 10 });
+    expect(withBatch.status).toBe(201);
+    expect(withBatch.body.out.stockItem.quantity).toBe(90);
+    expect(withBatch.body.inn.stockItem.quantity).toBe(10);
+  });
+});
+
 describe("#4 post-pick adjustment (put-back)", () => {
   it("creates a put-back task when Final Qty drops below already-picked, and confirming it reconciles stock and qtyPicked", async () => {
     const sku = await prisma.sku.create({ data: { code: "R7-SKU-4", name: "Round7 Putback Widget", unit: "pc" } });

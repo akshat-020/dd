@@ -171,6 +171,22 @@ stockRouter.get("/batches/resolve/:label", async (req, res) => {
   res.json({ sku, batch });
 });
 
+// Batch breakdown for one SKU at one specific location — deliberately
+// scoped to a single (locationId, skuId) pair rather than general stock
+// browsing, so it's available to Warehouse (via requireScanAccess) for the
+// transfer flow: stock is tracked per batch, so moving "whatever's there"
+// isn't meaningful if more than one batch sits at that location — the
+// transfer endpoint always applies to one exact batchId (or explicitly no
+// batch), never "the total across batches."
+stockRouter.get("/at-location/:locationId/sku/:skuId", requireScanAccess, async (req, res) => {
+  const items = await prisma.stockItem.findMany({
+    where: { locationId: req.params.locationId, skuId: req.params.skuId, quantity: { gt: 0 } },
+    include: { batch: true },
+    orderBy: { quantity: "desc" },
+  });
+  res.json(items.map((i) => ({ batchId: i.batchId, batchCode: i.batch?.batchCode ?? null, quantity: i.quantity })));
+});
+
 // ---- Stock queries ----
 
 // General stock browsing is deliberately NOT available to Warehouse staff —
