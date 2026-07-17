@@ -17,6 +17,7 @@ import Reports from "./pages/Reports";
 import Users from "./pages/Users";
 import Security from "./pages/Security";
 import MyTasks from "./pages/MyTasks";
+import StockLookup from "./pages/StockLookup";
 
 function LoginRoute() {
   const { user, loading } = useAuth();
@@ -94,6 +95,14 @@ export default function App() {
               element={
                 <ProtectedRoute roles={["OWNER", "ACCOUNTANT"]}>
                   <Pricing />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/stock-lookup"
+              element={
+                <ProtectedRoute roles={["OWNER", "SALES"]}>
+                  <StockLookup />
                 </ProtectedRoute>
               }
             />

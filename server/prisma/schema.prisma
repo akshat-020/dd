@@ -78,11 +78,20 @@ model Sku {
   id               String   @id @default(cuid())
   code             String   @unique
   name             String
-  unit             String
+  unit             String // base unit — all stock quantities/movements/availability are tracked in this
   category         String?
   reorderThreshold Int      @default(0)
   active           Boolean  @default(true)
   createdAt        DateTime @default(now())
+
+  // Optional per-SKU compound unit (e.g. Box = 10 pcs for this SKU, 12 for
+  // another) — never a global constant. Both null means this SKU only ever
+  // has one unit. Changing altUnitFactor on a SKU that already has stock or
+  // open orders only applies going forward (see routes/skus.ts) — existing
+  // OrderLine/InvoiceReferenceLine rows freeze the factor that was in effect
+  // when they were entered, so a later change never reinterprets history.
+  altUnitName   String?
+  altUnitFactor Int?
 
   batches         SkuBatch[]
   stockItems      StockItem[]
@@ -191,10 +200,23 @@ model OrderLine {
   orderId      String
   sku          Sku     @relation(fields: [skuId], references: [id])
   skuId        String
-  qtyRequested Int
-  qtyFinalized Int?
+  qtyRequested Int // always in the SKU's base unit — canonical, used for all stock math
+  qtyFinalized Int? // always in the SKU's base unit — canonical, used for all stock math
   qtyPicked    Int     @default(0)
   notes        String?
+
+  // How Requested/Final Qty were actually entered — unit name, the quantity
+  // in that unit, and the conversion factor in effect at entry time (frozen,
+  // so a later change to the SKU's altUnitFactor never reinterprets a
+  // historical line). Null on both requested* and final* fields means "this
+  // row predates multi-unit support" — display code falls back to
+  // qty(Requested|Finalized) + sku.unit directly in that case.
+  requestedUnit    String?
+  requestedUnitQty Int?
+  requestedFactor  Int?
+  finalUnit        String?
+  finalUnitQty     Int?
+  finalFactor      Int?
 
   // Price kept in a separate 1:1 table so it can be omitted entirely from
   // Prisma `select`/`include` for non-privileged roles (structural
@@ -241,6 +263,17 @@ model PickListItem {
   // "Shortfalls needing attention" list actually queries on.
   isShortfallFollowup Boolean @default(false)
   note                String?
+
+  // How the picker actually expressed the picked quantity (e.g. "2 Box"),
+  // for display/audit only — qtyPicked above stays the base-unit (Pcs)
+  // canonical value all stock math uses. boxesOpened records a deliberate
+  // box-break to fulfill a partial-box quantity (e.g. needed 25 pcs from
+  // boxes of 10 -> opened 1 box) — purely an audit/traceability record,
+  // since breaking a box doesn't change the total Pcs count at this
+  // location and so has no effect on the compound-breakdown math.
+  pickedUnit    String?
+  pickedUnitQty Int?
+  boxesOpened   Int     @default(0)
 }
 
 model InvoiceReference {
@@ -263,9 +296,19 @@ model InvoiceReferenceLine {
   invoiceReferenceId  String
   sku                 Sku               @relation(fields: [skuId], references: [id])
   skuId               String
-  qty                 Int
+  qty                 Int // in `unit` if set, else the SKU's base unit — this is what was billed
   // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
+  // Price applies per 1 of `unit` — never auto-derived from a base-unit
+  // price × factor, since box/bulk pricing commonly carries its own margin.
   price               String
+
+  // Null means base unit (pre-multi-unit rows, or billed in the SKU's base
+  // unit). unitFactor is frozen at entry time, same reasoning as
+  // OrderLine.requestedFactor. qtyBaseUnits is the Pcs-equivalent, used for
+  // stock-reversal math on cancel/adjust (which operates in base units).
+  unit         String?
+  unitFactor   Int?
+  qtyBaseUnits Int?
 }
 
 // The cost/financial counterpart to a SkuBatch inward entry — mirrors

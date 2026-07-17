@@ -8,7 +8,11 @@ interface PricingLine {
   skuId: string;
   skuCode: string;
   skuName: string;
-  qty: number;
+  qty: number; // base unit — canonical
+  // How this line was actually placed (e.g. "5 Box") — null means base unit.
+  // Price applies per 1 of this unit, not the base unit.
+  unit: string | null;
+  unitQty: number | null;
   unitPrice: number | null;
 }
 
@@ -80,7 +84,15 @@ export default function Pricing() {
       await api.post("/invoice-references", {
         tallyInvoiceNumber: tallyNumber,
         orderId,
-        lines: lines.map((l) => ({ skuId: l.skuId, qty: l.qty, price: Number(prices[l.lineId]) })),
+        // Bill in whichever unit the order line was placed in — qty here
+        // is in that unit (unitQty), not the base-unit qty, since price was
+        // set per 1 of that unit.
+        lines: lines.map((l) => ({
+          skuId: l.skuId,
+          qty: l.unitQty ?? l.qty,
+          unit: l.unit ?? undefined,
+          price: Number(prices[l.lineId]),
+        })),
       });
       setTallyNumber("");
       setNotice("Invoice reference added.");
@@ -156,14 +168,17 @@ export default function Pricing() {
               <tr>
                 <th className="py-1">SKU</th>
                 <th className="py-1">Qty</th>
-                <th className="py-1">Unit price</th>
+                <th className="py-1">Price (per unit shown)</th>
               </tr>
             </thead>
             <tbody>
               {lines.map((l) => (
                 <tr key={l.lineId}>
                   <td className="py-1">{l.skuCode}</td>
-                  <td className="py-1">{l.qty}</td>
+                  <td className="py-1">
+                    {l.unit ? `${l.unitQty} ${l.unit}` : l.qty}
+                    {l.unit && <span className="ml-1 text-xs text-slate-400">({l.qty} base)</span>}
+                  </td>
                   <td className="py-1">
                     <input
                       type="number"
@@ -225,7 +240,7 @@ export default function Pricing() {
                 {ref.lines.map((l) => (
                   <li key={l.id} className="flex items-center justify-between">
                     <span>
-                      {l.sku?.code ?? l.skuId} · {l.qty} × ₹{l.price}
+                      {l.sku?.code ?? l.skuId} · {l.qty} {l.unit ?? l.sku?.unit ?? ""} × ₹{l.price}
                     </span>
                     {ref.status !== "CANCELLED" && (
                       <button onClick={() => handleAdjust(ref.id, l.id, l.qty, l.price)} disabled={busy} className="text-xs underline disabled:opacity-50">

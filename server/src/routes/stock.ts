@@ -7,6 +7,7 @@ import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateQrPngBuffer, generateQrSvg, encodeSkuBatchLabel } from "../lib/qr.js";
 import { applyStockMovement, getCommittedQuantities, getShelvedQuantities, InsufficientStockError } from "../lib/stock.js";
+import { compoundBreakdown } from "../lib/units.js";
 
 export const stockRouter = Router();
 
@@ -198,6 +199,40 @@ stockRouter.get("/sku/:skuId/locations", requireRole("OWNER", "ACCOUNTANT", "SAL
     orderBy: { location: { code: "asc" } },
   });
   res.json(items);
+});
+
+// Standalone SKU -> location lookup, usable any time — not nested inside an
+// active pick task, and not bundled into the SKU master page (which
+// Accountant can also reach). Owner + Sales only for now: a warehouse
+// staffer doing general floor work, or a sales supervisor answering "where's
+// X" for someone on the phone, without needing an assigned pick list first.
+stockRouter.get("/lookup/:skuId", requireRole("OWNER", "SALES"), async (req, res) => {
+  const sku = await prisma.sku.findUnique({ where: { id: req.params.skuId } });
+  if (!sku) return res.status(404).json({ error: "SKU not found" });
+
+  const items = await prisma.stockItem.findMany({
+    where: { skuId: req.params.skuId, quantity: { gt: 0 } },
+    include: { location: true },
+    orderBy: { location: { code: "asc" } },
+  });
+
+  // Aggregated per location (not per batch) — same reasoning as the
+  // stock-on-hand report: "how much is at A-03-02" shouldn't fragment into
+  // one row per batch received there.
+  const byLocation = new Map<string, { locationId: string; locationCode: string; quantity: number }>();
+  for (const i of items) {
+    const existing = byLocation.get(i.locationId);
+    if (existing) existing.quantity += i.quantity;
+    else byLocation.set(i.locationId, { locationId: i.locationId, locationCode: i.location.code, quantity: i.quantity });
+  }
+
+  const totalQty = items.reduce((sum, i) => sum + i.quantity, 0);
+  res.json({
+    sku: { id: sku.id, code: sku.code, name: sku.name, unit: sku.unit, altUnitName: sku.altUnitName, altUnitFactor: sku.altUnitFactor },
+    locations: Array.from(byLocation.values()).map((l) => ({ ...l, compound: compoundBreakdown(l.quantity, sku) })),
+    totalQty,
+    compound: compoundBreakdown(totalQty, sku),
+  });
 });
 
 // Total on-hand quantity per SKU across all locations — the "live quantity"

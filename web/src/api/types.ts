@@ -33,6 +33,16 @@ export interface Sku {
   category?: string | null;
   reorderThreshold: number;
   active: boolean;
+  // Optional per-SKU compound unit (e.g. Box = 10 pcs) — both null means
+  // this SKU only ever has one unit.
+  altUnitName?: string | null;
+  altUnitFactor?: number | null;
+}
+
+export interface CompoundBreakdown {
+  boxes: number;
+  pcs: number;
+  label: string;
 }
 
 export interface Location {
@@ -100,12 +110,20 @@ export interface OrderLine {
   id: string;
   orderId: string;
   skuId: string;
-  qtyRequested: number;
-  qtyFinalized: number | null;
+  qtyRequested: number; // always base unit — canonical
+  qtyFinalized: number | null; // always base unit — canonical
   qtyPicked: number;
   notes?: string | null;
   sku: Sku;
   unitPrice?: number | null;
+  // How Requested/Final Qty were actually entered — null means this line
+  // predates multi-unit support (display falls back to qty + sku.unit).
+  requestedUnit?: string | null;
+  requestedUnitQty?: number | null;
+  requestedFactor?: number | null;
+  finalUnit?: string | null;
+  finalUnitQty?: number | null;
+  finalFactor?: number | null;
 }
 
 export interface Order {
@@ -156,14 +174,22 @@ export interface PickListItem {
   note?: string | null;
   sku: Sku;
   location: Location;
+  // How the picker actually expressed the picked quantity, and whether a
+  // box was deliberately opened to fulfill a partial-box quantity.
+  pickedUnit?: string | null;
+  pickedUnitQty?: number | null;
+  boxesOpened?: number;
 }
 
 export interface InvoiceReferenceLine {
   id: string;
   skuId: string;
-  qty: number;
-  price: number;
+  qty: number; // in `unit` if set, else the SKU's base unit — what was billed
+  price: number; // per 1 of `unit`
   sku?: Sku;
+  unit?: string | null;
+  unitFactor?: number | null;
+  qtyBaseUnits?: number | null;
 }
 
 export interface InvoiceReference {

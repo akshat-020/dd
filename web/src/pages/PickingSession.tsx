@@ -5,6 +5,7 @@ import type { PickListItem } from "../api/types";
 import { db } from "../offline/db";
 import { enqueueAction, flushQueue, onQueueChange, pendingCount } from "../offline/queue";
 import { QrScannerModal } from "../components/QrScannerModal";
+import { availableUnits, compoundBreakdown, toBaseQty } from "../lib/units";
 
 type ScannerTarget = "location" | "sku" | null;
 
@@ -14,6 +15,15 @@ export default function PickingSession() {
   const [error, setError] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [qty, setQty] = useState("");
+  // Which unit the picker is entering the quantity in (Pcs or the SKU's
+  // alternate unit, e.g. Box) — reset to the SKU's base unit whenever the
+  // current item changes, in the effect below.
+  const [pickUnit, setPickUnit] = useState("");
+  // Boxes deliberately opened to fulfill a partial-box quantity (e.g. needed
+  // 25 pcs from boxes of 10 -> opened 1 box) — self-reported by the picker,
+  // not computed, since stock isn't separately tracked as boxed vs. loose
+  // (see schema.prisma's PickListItem.boxesOpened comment).
+  const [boxesOpened, setBoxesOpened] = useState("");
   const [online, setOnline] = useState(navigator.onLine);
   const [pending, setPending] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -65,6 +75,11 @@ export default function PickingSession() {
     const sorted = [...items].sort((a, b) => a.sequence - b.sequence);
     return sorted.find((i) => i.status !== "PICKED") ?? null;
   }, [items]);
+
+  useEffect(() => {
+    setPickUnit(currentItem?.sku.unit ?? "");
+    setBoxesOpened("");
+  }, [currentItem?.id, currentItem?.sku.unit]);
 
   function updateLocal(itemId: string, patch: Partial<PickListItem>) {
     setItems((prev) => {
@@ -138,25 +153,38 @@ export default function PickingSession() {
 
   async function handleConfirm() {
     if (!currentItem || busy) return;
-    const quantity = Number(qty || currentItem.qtyToPick);
-    if (quantity <= 0 || quantity > currentItem.qtyToPick) {
-      setError(`Quantity must be between 1 and ${currentItem.qtyToPick}`);
+    const unitQty = Number(qty || (pickUnit === currentItem.sku.unit ? currentItem.qtyToPick : ""));
+    if (!(unitQty > 0)) {
+      setError("Enter a quantity");
       return;
     }
+    const quantity = toBaseQty(unitQty, pickUnit, currentItem.sku);
+    if (quantity <= 0 || quantity > currentItem.qtyToPick) {
+      setError(`Quantity must be between 1 and ${currentItem.qtyToPick} ${currentItem.sku.unit}`);
+      return;
+    }
+    const payload = {
+      quantity,
+      unit: pickUnit,
+      unitQty,
+      boxesOpened: boxesOpened ? Number(boxesOpened) : undefined,
+    };
     setError(null);
     setBusy(true);
     try {
       if (navigator.onLine) {
-        await api.post(`/picking/items/${currentItem.id}/confirm`, { quantity });
+        await api.post(`/picking/items/${currentItem.id}/confirm`, payload);
         setQty("");
+        setBoxesOpened("");
         await loadFromServer();
       } else {
         setQty("");
+        setBoxesOpened("");
         updateLocal(currentItem.id, { status: "PICKED", qtyPicked: quantity });
         await enqueueAction({
           type: "confirm-pick",
           path: `/picking/items/${currentItem.id}/confirm`,
-          payload: { quantity },
+          payload,
           orderId,
           itemId: currentItem.id,
         });
@@ -208,7 +236,12 @@ export default function PickingSession() {
           <div className="mb-4 rounded-xl bg-slate-100 p-4 text-center dark:bg-slate-800">
             <div className="text-xs uppercase text-slate-500 dark:text-slate-400">Go to location</div>
             <div className="text-3xl font-bold tracking-wide text-slate-900 dark:text-slate-50">{currentItem.location.code}</div>
-            <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">Pick {currentItem.qtyToPick} {currentItem.sku.unit}</div>
+            <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Pick {currentItem.qtyToPick} {currentItem.sku.unit}
+              {compoundBreakdown(currentItem.qtyToPick, currentItem.sku) && (
+                <span className="ml-1 text-xs text-slate-400">({compoundBreakdown(currentItem.qtyToPick, currentItem.sku)})</span>
+              )}
+            </div>
           </div>
 
           {currentItem.status === "PENDING" && (
@@ -232,25 +265,17 @@ export default function PickingSession() {
           )}
 
           {currentItem.status === "SKU_CONFIRMED" && (
-            <div className="space-y-2">
-              <input
-                type="number"
-                min={1}
-                max={currentItem.qtyToPick}
-                placeholder={String(currentItem.qtyToPick)}
-                value={qty}
-                disabled={busy}
-                onChange={(e) => setQty(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-center text-2xl font-bold outline-none focus:border-slate-500 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              />
-              <button
-                onClick={handleConfirm}
-                disabled={busy}
-                className="w-full rounded-xl bg-green-600 px-4 py-4 text-lg font-semibold text-white disabled:opacity-50"
-              >
-                {busy ? "Confirming…" : "Confirm pick"}
-              </button>
-            </div>
+            <PickQtyForm
+              item={currentItem}
+              qty={qty}
+              setQty={setQty}
+              pickUnit={pickUnit}
+              setPickUnit={setPickUnit}
+              boxesOpened={boxesOpened}
+              setBoxesOpened={setBoxesOpened}
+              busy={busy}
+              onConfirm={handleConfirm}
+            />
           )}
         </div>
       )}
@@ -275,6 +300,95 @@ export default function PickingSession() {
             </li>
           ))}
       </ul>
+    </div>
+  );
+}
+
+// Quantity + unit entry for the current pick. When the SKU has an alternate
+// unit (e.g. Box), the picker can enter either unit; if the resulting
+// base-unit quantity isn't a whole multiple of the box factor, a partial
+// box has to be opened to fulfill it — offers an optional "boxes opened"
+// field pre-filled with the obvious answer (exactly one), which the picker
+// can confirm or correct (see the addendum's Section 5: this is a
+// deliberate box-break, not a shortfall, and stock isn't separately tracked
+// as boxed vs. loose, so this is a self-reported audit field, not something
+// the system can compute from stock state).
+function PickQtyForm({
+  item,
+  qty,
+  setQty,
+  pickUnit,
+  setPickUnit,
+  boxesOpened,
+  setBoxesOpened,
+  busy,
+  onConfirm,
+}: {
+  item: PickListItem;
+  qty: string;
+  setQty: (v: string) => void;
+  pickUnit: string;
+  setPickUnit: (v: string) => void;
+  boxesOpened: string;
+  setBoxesOpened: (v: string) => void;
+  busy: boolean;
+  onConfirm: () => void;
+}) {
+  const units = availableUnits(item.sku);
+  const unitQty = Number(qty) || 0;
+  const baseQty = pickUnit ? toBaseQty(unitQty, pickUnit, item.sku) : unitQty;
+  const needsBoxBreak = item.sku.altUnitFactor != null && baseQty > 0 && baseQty % item.sku.altUnitFactor !== 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <input
+          type="number"
+          min={1}
+          placeholder={String(item.qtyToPick)}
+          value={qty}
+          disabled={busy}
+          onChange={(e) => setQty(e.target.value)}
+          className="flex-1 rounded-xl border border-slate-300 px-4 py-4 text-center text-2xl font-bold outline-none focus:border-slate-500 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        />
+        {units.length > 1 && (
+          <select
+            value={pickUnit}
+            disabled={busy}
+            onChange={(e) => setPickUnit(e.target.value)}
+            className="rounded-xl border border-slate-300 px-2 text-sm disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          >
+            {units.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {needsBoxBreak && (
+        <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+          <p className="mb-1">
+            {baseQty} {item.sku.unit} isn't a whole number of {item.sku.altUnitName}s — a box needs to be opened. How many did you open?
+          </p>
+          <input
+            type="number"
+            min={0}
+            placeholder="1"
+            value={boxesOpened}
+            disabled={busy}
+            onChange={(e) => setBoxesOpened(e.target.value)}
+            className="w-20 rounded border border-amber-300 px-2 py-1 disabled:opacity-60 dark:border-amber-800 dark:bg-slate-800"
+          />
+        </div>
+      )}
+      <button
+        onClick={onConfirm}
+        disabled={busy}
+        className="w-full rounded-xl bg-green-600 px-4 py-4 text-lg font-semibold text-white disabled:opacity-50"
+      >
+        {busy ? "Confirming…" : "Confirm pick"}
+      </button>
     </div>
   );
 }

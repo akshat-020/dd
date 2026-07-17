@@ -6,6 +6,7 @@ import { recordAudit } from "../lib/audit.js";
 import { PRICE_VISIBLE_ROLES } from "../lib/roles.js";
 import { decryptNumber } from "../lib/crypto.js";
 import { getCommittedQuantities, reconcileOrderLineAllocation, ShortfallError } from "../lib/stock.js";
+import { resolveUnitFactor, toBaseQty, InvalidUnitError } from "../lib/units.js";
 
 export const ordersRouter = Router();
 
@@ -90,7 +91,9 @@ ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req
 
 const orderLineInput = z.object({
   skuId: z.string().min(1),
+  // In `unit` if provided, else the SKU's base unit — see resolveUnitFactor.
   qtyRequested: z.number().int().positive(),
+  unit: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -106,6 +109,30 @@ ordersRouter.post("/", requireRole("OWNER", "SALES"), async (req: AuthedRequest,
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
   }
+
+  const skus = await prisma.sku.findMany({ where: { id: { in: parsed.data.lines.map((l) => l.skuId) } } });
+  const skuById = new Map(skus.map((s) => [s.id, s]));
+  const missing = parsed.data.lines.find((l) => !skuById.has(l.skuId));
+  if (missing) return res.status(404).json({ error: `SKU ${missing.skuId} not found` });
+
+  let lineData;
+  try {
+    lineData = parsed.data.lines.map((l) => {
+      const { unit, factor } = resolveUnitFactor(skuById.get(l.skuId)!, l.unit);
+      return {
+        skuId: l.skuId,
+        qtyRequested: toBaseQty(l.qtyRequested, factor),
+        requestedUnit: unit,
+        requestedUnitQty: l.qtyRequested,
+        requestedFactor: factor,
+        notes: l.notes,
+      };
+    });
+  } catch (err) {
+    if (err instanceof InvalidUnitError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+
   const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}`;
   const order = await prisma.order.create({
     data: {
@@ -114,7 +141,7 @@ ordersRouter.post("/", requireRole("OWNER", "SALES"), async (req: AuthedRequest,
       buyerContact: parsed.data.buyerContact,
       vehicleCapacityNote: parsed.data.vehicleCapacityNote,
       createdById: req.user!.id,
-      lines: { create: parsed.data.lines.map((l) => ({ skuId: l.skuId, qtyRequested: l.qtyRequested, notes: l.notes })) },
+      lines: { create: lineData },
     },
     include: { lines: { include: { sku: true } } },
   });
@@ -170,6 +197,9 @@ const updateLinesSchema = z.object({
         skuId: z.string().min(1).optional(),
         qtyRequested: z.number().int().positive().optional(), // only used when adding a new line — see below
         qtyFinalized: z.number().int().min(0).optional(),
+        // Applies to whichever of qtyRequested/qtyFinalized is present in
+        // this line — in that unit if provided, else the SKU's base unit.
+        unit: z.string().optional(),
         notes: z.string().optional(),
         remove: z.boolean().optional(),
       })
@@ -223,22 +253,43 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
         } else if (line.id) {
           const existing = before.lines.find((l) => l.id === line.id);
           if (!existing) continue;
-          if (isFinalized && line.qtyFinalized !== undefined) {
-            await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: existing.skuId, newQty: line.qtyFinalized });
+          const data: Record<string, unknown> = { notes: line.notes };
+          if (line.qtyFinalized !== undefined) {
+            const sku = await tx.sku.findUnique({ where: { id: existing.skuId } });
+            if (!sku) throw new Error(`SKU ${existing.skuId} not found`);
+            const { unit, factor } = resolveUnitFactor(sku, line.unit);
+            const baseQty = toBaseQty(line.qtyFinalized, factor);
+            data.qtyFinalized = baseQty;
+            data.finalUnit = unit;
+            data.finalUnitQty = line.qtyFinalized;
+            data.finalFactor = factor;
+            if (isFinalized) {
+              await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: existing.skuId, newQty: baseQty });
+            }
           }
-          await tx.orderLine.update({ where: { id: line.id }, data: { qtyFinalized: line.qtyFinalized, notes: line.notes } });
+          await tx.orderLine.update({ where: { id: line.id }, data });
         } else if (line.skuId && line.qtyRequested) {
+          const sku = await tx.sku.findUnique({ where: { id: line.skuId } });
+          if (!sku) throw new Error(`SKU ${line.skuId} not found`);
+          const { unit, factor } = resolveUnitFactor(sku, line.unit);
+          const baseQty = toBaseQty(line.qtyRequested, factor);
           const newLine = await tx.orderLine.create({
             data: {
               orderId: before.id,
               skuId: line.skuId,
-              qtyRequested: line.qtyRequested,
-              qtyFinalized: isFinalized ? line.qtyRequested : undefined,
+              qtyRequested: baseQty,
+              requestedUnit: unit,
+              requestedUnitQty: line.qtyRequested,
+              requestedFactor: factor,
+              qtyFinalized: isFinalized ? baseQty : undefined,
+              finalUnit: isFinalized ? unit : undefined,
+              finalUnitQty: isFinalized ? line.qtyRequested : undefined,
+              finalFactor: isFinalized ? factor : undefined,
               notes: line.notes,
             },
           });
           if (isFinalized) {
-            await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: newLine.skuId, newQty: line.qtyRequested });
+            await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: newLine.skuId, newQty: baseQty });
           }
         }
       }
@@ -286,7 +337,14 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
 
     for (const line of order.lines) {
       const qty = line.qtyFinalized ?? line.qtyRequested;
-      await tx.orderLine.update({ where: { id: line.id }, data: { qtyFinalized: qty } });
+      // Carry the requested unit/factor over as the final unit/factor when
+      // Final Qty hasn't been separately edited (the common case) — display
+      // should keep showing "5 Box", not silently drop to base-unit pcs.
+      const finalUnitFields =
+        line.finalUnitQty != null
+          ? {}
+          : { finalUnit: line.requestedUnit, finalUnitQty: line.requestedUnitQty, finalFactor: line.requestedFactor };
+      await tx.orderLine.update({ where: { id: line.id }, data: { qtyFinalized: qty, ...finalUnitFields } });
       if (qty === 0) continue;
 
       const stockItems = await tx.stockItem.findMany({

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, ApiError, qrImageUrl } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { PurchaseCostReference, Sku, SkuBatch, StockSummaryEntry } from "../api/types";
+import { compoundBreakdown } from "../lib/units";
 
 export default function SkusPage() {
   const { hasRole } = useAuth();
@@ -13,7 +14,7 @@ export default function SkusPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ code: "", name: "", unit: "", category: "", reorderThreshold: "0" });
+  const [form, setForm] = useState({ code: "", name: "", unit: "", category: "", reorderThreshold: "0", altUnitName: "", altUnitFactor: "" });
   const [submitting, setSubmitting] = useState(false);
 
   function load() {
@@ -48,8 +49,10 @@ export default function SkusPage() {
         unit: form.unit,
         category: form.category || undefined,
         reorderThreshold: Number(form.reorderThreshold) || 0,
+        altUnitName: form.altUnitName || undefined,
+        altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
       });
-      setForm({ code: "", name: "", unit: "", category: "", reorderThreshold: "0" });
+      setForm({ code: "", name: "", unit: "", category: "", reorderThreshold: "0", altUnitName: "", altUnitFactor: "" });
       setShowForm(false);
       load();
     } catch (err) {
@@ -97,6 +100,20 @@ export default function SkusPage() {
               value={form.reorderThreshold}
               onChange={(v) => setForm({ ...form, reorderThreshold: v })}
             />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+              Alternate unit (optional) — e.g. Box, sold/stored as a multiple of the base unit above.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Alt unit name" value={form.altUnitName} onChange={(v) => setForm({ ...form, altUnitName: v })} />
+              <Field
+                label={`1 ${form.altUnitName || "alt unit"} = how many ${form.unit || "base units"}`}
+                type="number"
+                value={form.altUnitFactor}
+                onChange={(v) => setForm({ ...form, altUnitFactor: v })}
+              />
+            </div>
           </div>
           <button type="submit" disabled={submitting} className="w-full rounded-lg bg-slate-900 px-4 py-3 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
             {submitting ? "Saving…" : "Save SKU"}
@@ -159,11 +176,21 @@ function SkuRow({
       <tr onClick={canExpand ? onToggle : undefined} className={canExpand ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" : undefined}>
         <td className="px-4 py-2 font-mono text-xs">{sku.code}</td>
         <td className="px-4 py-2 text-slate-900 dark:text-slate-50">{sku.name}</td>
-        <td className="px-4 py-2">{sku.unit}</td>
+        <td className="px-4 py-2">
+          {sku.unit}
+          {sku.altUnitName && sku.altUnitFactor && (
+            <span className="ml-1 text-xs text-slate-400">
+              (1 {sku.altUnitName} = {sku.altUnitFactor})
+            </span>
+          )}
+        </td>
         <td className="px-4 py-2">{sku.category ?? "—"}</td>
         {canSeeStock && (
           <td className={`px-4 py-2 ${qty !== null && qty <= sku.reorderThreshold ? "text-red-600 dark:text-red-400" : ""}`}>
-            {qty} {canExpand && (expanded ? "▲" : "▼")}
+            {qty}
+            {qty !== null && compoundBreakdown(qty, sku) && <span className="ml-1 text-xs text-slate-400">({compoundBreakdown(qty, sku)})</span>}
+            {" "}
+            {canExpand && (expanded ? "▲" : "▼")}
           </td>
         )}
       </tr>
@@ -186,13 +213,46 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
     unit: sku.unit,
     category: sku.category ?? "",
     reorderThreshold: String(sku.reorderThreshold),
+    altUnitName: sku.altUnitName ?? "",
+    altUnitFactor: sku.altUnitFactor != null ? String(sku.altUnitFactor) : "",
   });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Set when the server warns that changing an existing conversion factor
+  // affects a SKU that already has stock or open orders — offering a
+  // "confirm and proceed" action instead of just failing (see Section 1 of
+  // the addendum: the change only applies going forward, never retroactive).
+  const [factorWarning, setFactorWarning] = useState<string | null>(null);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     e.stopPropagation();
+    setSubmitting(true);
+    setError(null);
+    setFactorWarning(null);
+    try {
+      await api.patch(`/skus/${sku.id}`, {
+        name: form.name,
+        unit: form.unit,
+        category: form.category || undefined,
+        reorderThreshold: Number(form.reorderThreshold) || 0,
+        altUnitName: form.altUnitName || undefined,
+        altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
+      });
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      if (err instanceof ApiError && err.body?.requiresConfirmation) {
+        setFactorWarning(err.message);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Failed to save changes");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleConfirmFactorChange() {
     setSubmitting(true);
     setError(null);
     try {
@@ -201,7 +261,11 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
         unit: form.unit,
         category: form.category || undefined,
         reorderThreshold: Number(form.reorderThreshold) || 0,
+        altUnitName: form.altUnitName || undefined,
+        altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
+        confirmFactorChange: true,
       });
+      setFactorWarning(null);
       setEditing(false);
       onSaved();
     } catch (err) {
@@ -237,6 +301,36 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
         <Field label="Category" value={form.category} onChange={(v) => setForm({ ...form, category: v })} />
         <Field label="Reorder threshold" type="number" value={form.reorderThreshold} onChange={(v) => setForm({ ...form, reorderThreshold: v })} />
       </div>
+      <div>
+        <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+          Alternate unit (optional) — e.g. Box, sold/stored as a multiple of the base unit above.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Alt unit name" value={form.altUnitName} onChange={(v) => setForm({ ...form, altUnitName: v })} />
+          <Field
+            label={`1 ${form.altUnitName || "alt unit"} = how many ${form.unit || "base units"}`}
+            type="number"
+            value={form.altUnitFactor}
+            onChange={(v) => setForm({ ...form, altUnitFactor: v })}
+          />
+        </div>
+      </div>
+      {factorWarning && (
+        <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+          <p>{factorWarning}</p>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleConfirmFactorChange();
+            }}
+            disabled={submitting}
+            className="mt-1 font-medium underline disabled:opacity-50"
+          >
+            {submitting ? "Saving…" : "Yes, change it anyway (applies going forward only)"}
+          </button>
+        </div>
+      )}
       <div className="flex gap-2">
         <button
           type="submit"

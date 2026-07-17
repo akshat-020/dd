@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
 import { decryptNumber } from "../lib/crypto.js";
 import { verifyAuditChain } from "../lib/audit.js";
+import { compoundBreakdown } from "../lib/units.js";
 
 export const reportsRouter = Router();
 
@@ -65,7 +66,15 @@ reportsRouter.get("/stock-on-hand", requireRole("OWNER", "ACCOUNTANT", "SALES"),
     }
   }
 
-  res.json(Array.from(grouped.values()));
+  // Compound breakdown (e.g. "16 Box + 3 pcs") for SKUs with a conversion
+  // factor — pure display, computed from the same aggregated quantity.
+  const skuById = new Map(items.map((i) => [i.skuId, i.sku]));
+  res.json(
+    Array.from(grouped.values()).map((row) => ({
+      ...row,
+      compound: compoundBreakdown(row.quantity, skuById.get(row.skuId)!),
+    }))
+  );
 });
 
 // Order fulfillment turnaround: received -> loaded -> invoiced.

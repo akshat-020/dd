@@ -71,7 +71,18 @@ pickingRouter.post("/items/:itemId/scan-sku", requireScanAccess, async (req, res
   res.json(updated);
 });
 
-const confirmSchema = z.object({ quantity: z.number().int().positive() });
+const confirmSchema = z.object({
+  quantity: z.number().int().positive(), // always base-unit (Pcs) — canonical, what stock math uses
+  // How the picker actually expressed it (e.g. "2 Box") — display/audit
+  // only, doesn't affect `quantity` above. boxesOpened records a deliberate
+  // box-break to fulfill a partial-box quantity — see schema.prisma's
+  // PickListItem.boxesOpened comment for why this doesn't change the stock
+  // math (breaking a box doesn't change the total Pcs count at this
+  // location).
+  unit: z.string().optional(),
+  unitQty: z.number().positive().optional(),
+  boxesOpened: z.number().int().min(0).optional(),
+});
 
 pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: AuthedRequest, res) => {
   const parsed = confirmSchema.safeParse(req.body);
@@ -108,7 +119,15 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
       });
       await tx.pickListItem.update({
         where: { id: item.id },
-        data: { qtyPicked: parsed.data.quantity, status: "PICKED", pickedById: req.user!.id, pickedAt: new Date() },
+        data: {
+          qtyPicked: parsed.data.quantity,
+          status: "PICKED",
+          pickedById: req.user!.id,
+          pickedAt: new Date(),
+          pickedUnit: parsed.data.unit ?? null,
+          pickedUnitQty: parsed.data.unitQty ?? null,
+          boxesOpened: parsed.data.boxesOpened ?? 0,
+        },
       });
 
       const orderLine = await tx.orderLine.findFirst({ where: { orderId: item.orderId, skuId: item.skuId } });
@@ -155,7 +174,7 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
       action: "PICK_CONFIRM",
       entityType: "PickListItem",
       entityId: item.id,
-      after: { quantity: parsed.data.quantity, orderId },
+      after: { quantity: parsed.data.quantity, orderId, boxesOpened: parsed.data.boxesOpened ?? 0 },
     });
 
     const updated = await prisma.pickListItem.findUnique({ where: { id: item.id } });

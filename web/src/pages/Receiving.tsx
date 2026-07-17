@@ -4,6 +4,7 @@ import type { Location, Sku, SkuBatch } from "../api/types";
 import { QrScannerModal } from "../components/QrScannerModal";
 import { SkuCombobox } from "../components/SkuCombobox";
 import { useAuth } from "../auth/AuthContext";
+import { compoundBreakdown } from "../lib/units";
 
 type ScannerTarget = "location" | "sku" | null;
 
@@ -116,7 +117,10 @@ export default function Receiving() {
     setSubmitting(true);
     try {
       await api.post("/stock/putaway", { skuId: batch.skuId, locationId: location.id, batchId: batch.id, quantity });
-      setNotice(`Placed ${quantity} at ${location.code}. Pick another batch, or log a new one.`);
+      const compound = activeSku ? compoundBreakdown(quantity, activeSku) : null;
+      setNotice(
+        `Placed ${quantity}${compound ? ` (${compound})` : ""} at ${location.code}. Pick another batch, or log a new one.`
+      );
       setBatch(null);
       setLocation(null);
       setSkuLabelConfirmed(false);

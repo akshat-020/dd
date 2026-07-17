@@ -27,7 +27,12 @@ pricingRouter.get("/:id/pricing", requireRole("OWNER", "ACCOUNTANT"), async (req
       skuId: l.skuId,
       skuCode: l.sku.code,
       skuName: l.sku.name,
-      qty: l.qtyFinalized ?? l.qtyRequested,
+      qty: l.qtyFinalized ?? l.qtyRequested, // base unit — canonical
+      // How this line was actually placed (e.g. "5 Box") — null means base
+      // unit already. Pricing/billing applies per 1 of this unit, not the
+      // base unit, since box/bulk pricing carries its own margin.
+      unit: l.finalUnit ?? l.requestedUnit ?? null,
+      unitQty: l.finalUnitQty ?? l.requestedUnitQty ?? null,
       unitPrice: l.price ? decryptNumber(l.price.unitPrice) : null,
     })),
   });

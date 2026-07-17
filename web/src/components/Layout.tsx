@@ -24,6 +24,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/my-tasks", label: "My Tasks", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
+  // Standalone SKU -> location search, independent of any active pick task
+  // (see the permissions addendum). Owner + Sales only for now.
+  { to: "/stock-lookup", label: "Find Stock", roles: ["OWNER", "SALES"] },
   { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },

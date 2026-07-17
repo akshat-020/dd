@@ -12,6 +12,9 @@ interface StockOnHandRow {
   locationCode: string;
   quantity: number;
   batches: { batchId: string | null; batchCode: string | null; receivedDate: string | null; quantity: number }[];
+  // Server-computed "16 Box + 3 pcs" breakdown — null for SKUs with no
+  // alternate unit configured.
+  compound: { boxes: number; pcs: number; label: string } | null;
 }
 
 interface TurnaroundRow {
@@ -162,6 +165,7 @@ function StockOnHandTable({ rows }: { rows: StockOnHandRow[] }) {
                   <td className="px-4 py-2 whitespace-nowrap">{row.locationCode}</td>
                   <td className="px-4 py-2 whitespace-nowrap">
                     {row.quantity}
+                    {row.compound && <span className="ml-1 text-xs text-slate-400">= {row.compound.label}</span>}
                     {multiBatch && <span className="ml-1 text-xs text-slate-400">({row.batches.length} batches {expanded ? "▲" : "▼"})</span>}
                   </td>
                   <td className="px-4 py-2 whitespace-nowrap">{row.unit}</td>

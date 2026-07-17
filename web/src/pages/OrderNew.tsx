@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { Order, Sku, StockSummaryEntry } from "../api/types";
 import { SkuCombobox } from "../components/SkuCombobox";
+import { availableUnits, toBaseQty } from "../lib/units";
 
 interface LineDraft {
   skuId: string;
   qtyRequested: string;
+  unit: string;
 }
 
 export default function OrderNew() {
@@ -17,7 +19,7 @@ export default function OrderNew() {
   const [buyerName, setBuyerName] = useState("");
   const [buyerContact, setBuyerContact] = useState("");
   const [vehicleCapacityNote, setVehicleCapacityNote] = useState("");
-  const [lines, setLines] = useState<LineDraft[]>([{ skuId: "", qtyRequested: "" }]);
+  const [lines, setLines] = useState<LineDraft[]>([{ skuId: "", qtyRequested: "", unit: "" }]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -37,11 +39,24 @@ export default function OrderNew() {
   }, []);
 
   function updateLine(idx: number, patch: Partial<LineDraft>) {
-    setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
+    setLines((prev) =>
+      prev.map((l, i) => {
+        if (i !== idx) return l;
+        const next = { ...l, ...patch };
+        // Picking a new SKU resets the unit to that SKU's base unit —
+        // otherwise a leftover "Box" selection from the previous SKU could
+        // silently apply the wrong conversion factor.
+        if (patch.skuId !== undefined && patch.skuId !== l.skuId) {
+          const sku = skus.find((s) => s.id === patch.skuId);
+          next.unit = sku?.unit ?? "";
+        }
+        return next;
+      })
+    );
   }
 
   function addLine() {
-    setLines((prev) => [...prev, { skuId: "", qtyRequested: "" }]);
+    setLines((prev) => [...prev, { skuId: "", qtyRequested: "", unit: "" }]);
   }
 
   function removeLine(idx: number) {
@@ -62,7 +77,7 @@ export default function OrderNew() {
         buyerName,
         buyerContact: buyerContact || undefined,
         vehicleCapacityNote: vehicleCapacityNote || undefined,
-        lines: validLines.map((l) => ({ skuId: l.skuId, qtyRequested: Number(l.qtyRequested) })),
+        lines: validLines.map((l) => ({ skuId: l.skuId, qtyRequested: Number(l.qtyRequested), unit: l.unit || undefined })),
       });
       navigate(`/orders/${order.id}`);
     } catch (err) {
@@ -112,9 +127,14 @@ export default function OrderNew() {
         <div className="space-y-3">
           <span className="block text-sm font-medium text-slate-700 dark:text-slate-300">Items</span>
           {lines.map((line, idx) => {
+            const sku = skus.find((s) => s.id === line.skuId);
             const available = line.skuId ? stockBySku.get(line.skuId) ?? 0 : null;
-            const requested = Number(line.qtyRequested) || 0;
-            const insufficient = available !== null && requested > available;
+            const requestedInUnit = Number(line.qtyRequested) || 0;
+            // Availability is always tracked in the base unit — convert the
+            // entered quantity before comparing.
+            const requestedBase = sku && line.unit ? toBaseQty(requestedInUnit, line.unit, sku) : requestedInUnit;
+            const insufficient = available !== null && requestedBase > available;
+            const units = sku ? availableUnits(sku) : [];
             return (
               <div key={idx} className="space-y-1">
                 <div className="flex gap-2">
@@ -125,8 +145,23 @@ export default function OrderNew() {
                     placeholder="Qty"
                     value={line.qtyRequested}
                     onChange={(e) => updateLine(idx, { qtyRequested: e.target.value })}
-                    className="w-24 rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    className="w-20 rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                   />
+                  {units.length > 1 ? (
+                    <select
+                      value={line.unit}
+                      onChange={(e) => updateLine(idx, { unit: e.target.value })}
+                      className="rounded-lg border border-slate-300 px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    >
+                      {units.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    sku && <span className="flex items-center px-1 text-sm text-slate-400">{sku.unit}</span>
+                  )}
                   <button
                     type="button"
                     onClick={() => removeLine(idx)}
@@ -138,7 +173,9 @@ export default function OrderNew() {
                 </div>
                 {available !== null && (
                   <p className={`text-xs ${insufficient ? "text-red-600 dark:text-red-400" : "text-slate-400"}`}>
-                    {available} available{insufficient ? " — not enough for this quantity" : ""}
+                    {available} {sku?.unit} available
+                    {sku && line.unit && line.unit !== sku.unit && requestedInUnit > 0 && ` (${requestedBase} ${sku.unit} requested)`}
+                    {insufficient ? " — not enough for this quantity" : ""}
                     {(committedBySku.get(line.skuId) ?? 0) > 0 && ` (${committedBySku.get(line.skuId)} already committed to other orders)`}
                   </p>
                 )}

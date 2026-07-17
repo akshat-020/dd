@@ -5,6 +5,7 @@ import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth
 import { recordAudit } from "../lib/audit.js";
 import { applyStockMovement } from "../lib/stock.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
+import { resolveUnitFactor, toBaseQty, InvalidUnitError } from "../lib/units.js";
 
 function serializeLines<T extends { price: string }>(lines: T[]) {
   return lines.map((l) => ({ ...l, price: decryptNumber(l.price) }));
@@ -38,7 +39,18 @@ const createSchema = z.object({
   tallyInvoiceNumber: z.string().min(1),
   orderId: z.string().min(1),
   date: z.string().datetime().optional(),
-  lines: z.array(z.object({ skuId: z.string().min(1), qty: z.number().int().positive(), price: z.number().nonnegative() })).min(1),
+  lines: z
+    .array(
+      z.object({
+        skuId: z.string().min(1),
+        qty: z.number().int().positive(), // in `unit` if provided, else the SKU's base unit
+        // Price applies per 1 of `unit` — never auto-derived from a
+        // base-unit price × factor (box/bulk pricing carries its own margin).
+        price: z.number().nonnegative(),
+        unit: z.string().optional(),
+      })
+    )
+    .min(1),
 });
 
 // Add Invoice Reference: attaches the Tally invoice number to the order and
@@ -52,13 +64,36 @@ invoiceReferencesRouter.post("/", async (req: AuthedRequest, res) => {
   const existing = await prisma.invoiceReference.findUnique({ where: { tallyInvoiceNumber: parsed.data.tallyInvoiceNumber } });
   if (existing) return res.status(409).json({ error: "This Tally invoice number is already referenced" });
 
+  const skus = await prisma.sku.findMany({ where: { id: { in: parsed.data.lines.map((l) => l.skuId) } } });
+  const skuById = new Map(skus.map((s) => [s.id, s]));
+  const missing = parsed.data.lines.find((l) => !skuById.has(l.skuId));
+  if (missing) return res.status(404).json({ error: `SKU ${missing.skuId} not found` });
+
+  let lineData;
+  try {
+    lineData = parsed.data.lines.map((l) => {
+      const { unit, factor } = resolveUnitFactor(skuById.get(l.skuId)!, l.unit);
+      return {
+        skuId: l.skuId,
+        qty: l.qty,
+        price: encryptNumber(l.price),
+        unit,
+        unitFactor: factor,
+        qtyBaseUnits: toBaseQty(l.qty, factor),
+      };
+    });
+  } catch (err) {
+    if (err instanceof InvalidUnitError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+
   const ref = await prisma.invoiceReference.create({
     data: {
       tallyInvoiceNumber: parsed.data.tallyInvoiceNumber,
       orderId: parsed.data.orderId,
       date: parsed.data.date ? new Date(parsed.data.date) : new Date(),
       createdById: req.user!.id,
-      lines: { create: parsed.data.lines.map((l) => ({ skuId: l.skuId, qty: l.qty, price: encryptNumber(l.price) })) },
+      lines: { create: lineData },
     },
     include: { lines: true },
   });
@@ -91,7 +126,11 @@ invoiceReferencesRouter.post("/:id/cancel", async (req: AuthedRequest, res) => {
         const pickItems = await tx.pickListItem.findMany({
           where: { orderId: ref.orderId, skuId: line.skuId, status: "PICKED" },
         });
-        let remaining = line.qty;
+        // qtyPicked (on PickListItem) is always base-unit (Pcs) — reverse
+        // using the base-unit equivalent of what was billed, not the
+        // billed-unit qty itself (qtyBaseUnits is null only on rows that
+        // predate multi-unit support, where qty was already base-unit).
+        let remaining = line.qtyBaseUnits ?? line.qty;
         for (const item of pickItems) {
           if (remaining <= 0) break;
           const restore = Math.min(item.qtyPicked, remaining);
@@ -148,7 +187,13 @@ invoiceReferencesRouter.post("/:id/adjust", async (req: AuthedRequest, res) => {
       if (!existingLine) continue;
 
       const newQty = update.qty ?? existingLine.qty;
-      const qtyDelta = existingLine.qty - newQty; // positive = billed qty went down -> stock returned
+      // Unit stays fixed at adjust time (only qty/price are editable here) —
+      // reuse the factor frozen at entry so a later SKU conversion-factor
+      // change never reinterprets this line.
+      const factor = existingLine.unitFactor ?? 1;
+      const newQtyBaseUnits = newQty * factor;
+      const existingQtyBaseUnits = existingLine.qtyBaseUnits ?? existingLine.qty;
+      const qtyDelta = existingQtyBaseUnits - newQtyBaseUnits; // positive = billed qty went down -> stock returned (base units)
 
       if (qtyDelta !== 0) {
         const pickItem = await tx.pickListItem.findFirst({ where: { orderId: ref.orderId, skuId: existingLine.skuId, status: "PICKED" } });
@@ -170,7 +215,11 @@ invoiceReferencesRouter.post("/:id/adjust", async (req: AuthedRequest, res) => {
 
       await tx.invoiceReferenceLine.update({
         where: { id: existingLine.id },
-        data: { qty: newQty, price: update.price !== undefined ? encryptNumber(update.price) : existingLine.price },
+        data: {
+          qty: newQty,
+          qtyBaseUnits: newQtyBaseUnits,
+          price: update.price !== undefined ? encryptNumber(update.price) : existingLine.price,
+        },
       });
     }
     await tx.invoiceReference.update({ where: { id: ref.id }, data: { status: "ADJUSTED" } });

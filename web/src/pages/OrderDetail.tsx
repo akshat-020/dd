@@ -4,6 +4,7 @@ import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { SkuCombobox } from "../components/SkuCombobox";
 import type { Order, PickListItem, Sku, StockCheckResult } from "../api/types";
+import { availableUnits, compoundBreakdown } from "../lib/units";
 
 export default function OrderDetail() {
   const { id } = useParams<{ id: string }>();
@@ -77,8 +78,8 @@ export default function OrderDetail() {
   // shows its own per-field saving/success/error state (see #1: an onBlur
   // auto-save with no visible Save action and no confirmation of success
   // or failure isn't good enough).
-  async function updateFinalQty(lineId: string, qtyFinalized: number) {
-    await api.patch(`/orders/${id}`, { lines: [{ id: lineId, qtyFinalized }] });
+  async function updateFinalQty(lineId: string, qtyFinalized: number, unit: string) {
+    await api.patch(`/orders/${id}`, { lines: [{ id: lineId, qtyFinalized, unit }] });
     await load();
   }
 
@@ -259,12 +260,20 @@ export default function OrderDetail() {
                   </td>
                   {/* Requested is the original ask — locked the moment the
                       line exists, never editable again. */}
-                  <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{line.qtyRequested}</td>
+                  <td className="px-4 py-2 text-slate-500 dark:text-slate-400">
+                    {formatUnitQty(line.qtyRequested, line.sku.unit, line.requestedUnit, line.requestedUnitQty)}
+                  </td>
                   <td className="px-4 py-2">
                     {isEditable && canEdit ? (
-                      <FinalQtyCell finalQty={finalQty} onSave={(v) => updateFinalQty(line.id, v)} />
+                      <FinalQtyCell
+                        finalQty={finalQty}
+                        sku={line.sku}
+                        unit={line.finalUnit ?? line.requestedUnit ?? line.sku.unit}
+                        unitQty={line.finalUnitQty ?? line.requestedUnitQty ?? finalQty}
+                        onSave={(qty, unit) => updateFinalQty(line.id, qty, unit)}
+                      />
                     ) : (
-                      finalQty
+                      formatUnitQty(finalQty, line.sku.unit, line.finalUnit, line.finalUnitQty)
                     )}
                   </td>
                   {!isDraft && <td className="px-4 py-2">{line.qtyPicked}</td>}
@@ -331,6 +340,9 @@ export default function OrderDetail() {
               <li key={item.id} className="flex items-center justify-between px-4 py-2 text-sm">
                 <span>
                   #{item.sequence} · {item.location.code} · {item.sku.code} × {item.qtyToPick}
+                  {compoundBreakdown(item.qtyToPick, item.sku) && (
+                    <span className="ml-1 text-xs text-slate-400">({compoundBreakdown(item.qtyToPick, item.sku)})</span>
+                  )}
                   {item.isShortfallFollowup && (
                     <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
                       shortfall follow-up
@@ -367,20 +379,45 @@ export default function OrderDetail() {
   );
 }
 
+// baseQty is always canonical (Pcs); unit/unitQty are how it was actually
+// entered — null unit (or unit === baseUnit) means it was entered in the
+// base unit already, so there's no separate equivalent worth showing.
+function formatUnitQty(baseQty: number, baseUnit: string, unit: string | null | undefined, unitQty: number | null | undefined) {
+  if (!unit || unit === baseUnit || unitQty == null) return `${baseQty} ${baseUnit}`;
+  return `${unitQty} ${unit} (${baseQty} ${baseUnit})`;
+}
+
 // Explicit edit -> Save/Cancel for the one editable quantity field, instead
 // of an onBlur auto-save with no visible action and no feedback on whether
 // it actually worked (see round 3 bug #1). Mirrors the same inline-edit
-// pattern already used for SKU and Location master rows.
-function FinalQtyCell({ finalQty, onSave }: { finalQty: number; onSave: (qty: number) => Promise<void> }) {
+// pattern already used for SKU and Location master rows. Extended for
+// multi-unit: lets staff enter/save in either the SKU's base unit or its
+// alternate unit (e.g. Box), converting to base units server-side.
+function FinalQtyCell({
+  finalQty,
+  sku,
+  unit,
+  unitQty,
+  onSave,
+}: {
+  finalQty: number;
+  sku: Sku;
+  unit: string;
+  unitQty: number;
+  onSave: (qty: number, unit: string) => Promise<void>;
+}) {
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(String(finalQty));
+  const [value, setValue] = useState(String(unitQty));
+  const [selectedUnit, setSelectedUnit] = useState(unit);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const units = availableUnits(sku);
 
   useEffect(() => {
-    setValue(String(finalQty));
-  }, [finalQty]);
+    setValue(String(unitQty));
+    setSelectedUnit(unit);
+  }, [finalQty, unit, unitQty]);
 
   async function handleSave() {
     const v = Number(value);
@@ -391,7 +428,7 @@ function FinalQtyCell({ finalQty, onSave }: { finalQty: number; onSave: (qty: nu
     setSaving(true);
     setError(null);
     try {
-      await onSave(v);
+      await onSave(v, selectedUnit);
       setEditing(false);
       setSaved(true);
     } catch (err) {
@@ -404,12 +441,13 @@ function FinalQtyCell({ finalQty, onSave }: { finalQty: number; onSave: (qty: nu
   if (!editing) {
     return (
       <div className="flex items-center gap-2">
-        <span>{finalQty}</span>
+        <span>{formatUnitQty(finalQty, sku.unit, unit, unitQty)}</span>
         <button
           onClick={() => {
             setEditing(true);
             setSaved(false);
-            setValue(String(finalQty));
+            setValue(String(unitQty));
+            setSelectedUnit(unit);
           }}
           className="text-xs font-medium text-blue-600 underline dark:text-blue-400"
         >
@@ -431,6 +469,22 @@ function FinalQtyCell({ finalQty, onSave }: { finalQty: number; onSave: (qty: nu
           onChange={(e) => setValue(e.target.value)}
           className="w-20 rounded border border-slate-300 px-2 py-1 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800"
         />
+        {units.length > 1 ? (
+          <select
+            value={selectedUnit}
+            disabled={saving}
+            onChange={(e) => setSelectedUnit(e.target.value)}
+            className="rounded border border-slate-300 px-1 py-1 text-xs disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800"
+          >
+            {units.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-xs text-slate-400">{sku.unit}</span>
+        )}
         <button
           onClick={handleSave}
           disabled={saving}
@@ -443,7 +497,8 @@ function FinalQtyCell({ finalQty, onSave }: { finalQty: number; onSave: (qty: nu
           disabled={saving}
           onClick={() => {
             setEditing(false);
-            setValue(String(finalQty));
+            setValue(String(unitQty));
+            setSelectedUnit(unit);
             setError(null);
           }}
           className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-slate-700"
