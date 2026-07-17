@@ -148,57 +148,128 @@ export class ShortfallError extends Error {
 // Reconciles a FINALIZED order line's pick-list allocation after its Final
 // Qty changes (or when a brand-new line is added to an already-finalized
 // order — that's just this same logic starting from zero existing
-// allocation). DRAFT orders never call this — they have no PickListItems
-// yet, so editing qtyFinalized there is a plain field update.
+// allocation, and finalize() itself calls this once per line too). DRAFT
+// orders never call this — they have no PickListItems yet, so editing
+// qtyFinalized there is a plain field update.
+//
+// Scoped by orderLineId, not just (orderId, skuId) — a SKU can appear on
+// more than one line of the same order, and PickListItem rows must be
+// attributed to the specific line that claimed them. Getting this wrong
+// silently mis-allocates: editing one line's Final Qty would read (and
+// potentially release) a sibling line's pick items, or treat a sibling's
+// existing allocation as if it already covered part of this line's target.
 //
 // - Increasing: allocates the extra quantity from on-hand stock not
-//   already claimed by *this* order's own pending items (StockItem itself
-//   isn't decremented until the physical pick-confirm scan, so this
-//   order's existing unpicked allocation is still physically sitting in
-//   those bins and would otherwise be double-counted) or by *other*
-//   orders (getCommittedQuantities). Throws ShortfallError if there isn't
-//   enough.
-// - Decreasing: shrinks/removes this order's own not-yet-picked
+//   already claimed by *this line's own* pending items, by a *sibling
+//   line's* pending items (same order, same SKU, different line —
+//   StockItem itself isn't decremented until the physical pick-confirm
+//   scan, so a sibling line's existing unpicked allocation is still
+//   physically sitting in those bins), or by *other orders*
+//   (getCommittedQuantities). Throws ShortfallError if there isn't enough.
+// - Decreasing: first shrinks/removes this line's own not-yet-picked
 //   PickListItems, latest-sequenced first (so an in-progress early pick
-//   isn't disrupted). Throws if the reduction would cut below what's
-//   already been physically picked — that's a real stock-reversal
-//   decision, not something an edit should do silently.
+//   isn't disrupted, and a sibling line's allocation is never touched). If
+//   that isn't enough to absorb the whole reduction — i.e. the excess is
+//   already physically picked — the remainder becomes a PutBackTask per
+//   source PICKED item (most-recently-picked first) instead of erroring:
+//   see the Round-4 operational-flow addendum, item 4. That stock already
+//   left the shelf at pick-confirm time, so it isn't reflected as
+//   available again until a warehouse account physically confirms the
+//   put-back (routes/putBacks.ts) — this function only records that it's
+//   owed, via the PutBackTask row (and the order line's derived
+//   pendingPutBackQty), not silently drop it from the count.
 export async function reconcileOrderLineAllocation(
   tx: Prisma.TransactionClient,
-  params: { orderId: string; skuId: string; newQty: number }
+  params: { orderId: string; orderLineId: string; skuId: string; newQty: number }
 ): Promise<void> {
-  const { orderId, skuId, newQty } = params;
+  const { orderId, orderLineId, skuId, newQty } = params;
 
-  const existingItems = await tx.pickListItem.findMany({ where: { orderId, skuId }, orderBy: { sequence: "asc" } });
+  // All pick items for this SKU in this order — this line's own plus any
+  // sibling lines' — needed both to scope this line's own accounting and
+  // to avoid re-offering a bin a sibling line already claims.
+  const allItemsForSku = await tx.pickListItem.findMany({ where: { orderId, skuId }, orderBy: { sequence: "asc" } });
+  const thisLineItems = allItemsForSku.filter((i) => i.orderLineId === orderLineId);
+  const siblingItems = allItemsForSku.filter((i) => i.orderLineId !== orderLineId);
+
+  // A PICKED item's qtyPicked doesn't drop until a put-back is physically
+  // *confirmed* (see the decrease branch below), so a second edit before
+  // that confirmation must still know how much of that qtyPicked is
+  // already earmarked for return — otherwise repeated edits would queue
+  // overlapping put-back tasks that together exceed what's actually picked.
+  const pendingPutBacks = await tx.putBackTask.groupBy({
+    by: ["sourcePickListItemId"],
+    where: { sourcePickListItemId: { in: thisLineItems.map((i) => i.id) }, status: "PENDING" },
+    _sum: { quantity: true },
+  });
+  const pendingBySourceItem = new Map(pendingPutBacks.map((p) => [p.sourcePickListItemId, p._sum.quantity ?? 0]));
+
   // A PICKED item's qtyToPick is its original target, which can now exceed
   // what was actually picked (a partial pick's shortfall lives in a
   // separate follow-up row — see the picking confirm handler) — so a
   // PICKED row's contribution to the running total is what was actually
-  // picked, not what it was originally allocated to pick.
-  const currentAllocated = existingItems.reduce((sum, i) => sum + (i.status === "PICKED" ? i.qtyPicked : i.qtyToPick), 0);
-  const currentPicked = existingItems.reduce((sum, i) => sum + i.qtyPicked, 0);
-
-  if (newQty < currentPicked) {
-    throw new Error(`Cannot reduce quantity below the ${currentPicked} already picked for this item`);
-  }
+  // picked *net of any put-back already queued against it*, not the raw
+  // qtyPicked and not what it was originally allocated to pick.
+  const currentAllocated = thisLineItems.reduce(
+    (sum, i) => sum + (i.status === "PICKED" ? i.qtyPicked - (pendingBySourceItem.get(i.id) ?? 0) : i.qtyToPick),
+    0
+  );
 
   const delta = newQty - currentAllocated;
   if (delta === 0) return;
 
   if (delta > 0) {
+    // Reclaim from this line's own pending put-back task(s) before
+    // allocating anything new — that stock never actually left the
+    // loading area (a put-back is only "returned" once physically
+    // confirmed), so increasing back up should cancel/shrink the pending
+    // return instead of leaving it standing while also drawing fresh stock
+    // from a shelf.
+    let remaining = delta;
+    const pendingTasksForLine = await tx.putBackTask.findMany({ where: { orderLineId, status: "PENDING" }, orderBy: { createdAt: "desc" } });
+    for (const task of pendingTasksForLine) {
+      if (remaining <= 0) break;
+      const reclaim = Math.min(task.quantity, remaining);
+      if (reclaim === task.quantity) {
+        await tx.putBackTask.delete({ where: { id: task.id } });
+      } else {
+        await tx.putBackTask.update({ where: { id: task.id }, data: { quantity: task.quantity - reclaim } });
+      }
+      remaining -= reclaim;
+    }
+    if (remaining <= 0) return;
+
     const committed = await getCommittedQuantities(tx, [skuId], orderId);
     const stockItems = await tx.stockItem.findMany({ where: { skuId, quantity: { gt: 0 } }, orderBy: { quantity: "desc" } });
     const totalOnHand = stockItems.reduce((sum, s) => sum + s.quantity, 0);
     const committedElsewhere = committed.get(skuId) ?? 0;
-    const trulyAvailable = totalOnHand - committedElsewhere;
+    const siblingAllocated = siblingItems.reduce((sum, i) => sum + (i.status === "PICKED" ? 0 : i.qtyToPick), 0);
+    // Re-fetch (rather than reuse the pre-reclaim map from above) since the
+    // reclaim loop just mutated these rows.
+    const pendingAfterReclaim = await tx.putBackTask.groupBy({
+      by: ["sourcePickListItemId"],
+      where: { sourcePickListItemId: { in: thisLineItems.map((i) => i.id) }, status: "PENDING" },
+      _sum: { quantity: true },
+    });
+    const pendingBySourceItemNow = new Map(pendingAfterReclaim.map((p) => [p.sourcePickListItemId, p._sum.quantity ?? 0]));
+    // This line's own already-PICKED quantity is physically off the shelf
+    // (StockItem was already decremented at pick-confirm time) and so isn't
+    // part of totalOnHand — it has to be credited back in here, or a line
+    // that's already partially picked would look short by that same amount
+    // every time it's increased further, even when there's genuinely
+    // enough stock for just the increase.
+    const pickedContribution = thisLineItems.reduce(
+      (sum, i) => sum + (i.status === "PICKED" ? i.qtyPicked - (pendingBySourceItemNow.get(i.id) ?? 0) : 0),
+      0
+    );
+    const trulyAvailable = totalOnHand - committedElsewhere - siblingAllocated + pickedContribution;
     if (trulyAvailable < newQty) {
       throw new ShortfallError(skuId, newQty, Math.max(trulyAvailable, 0));
     }
 
-    // Don't re-offer bin quantity this order has already claimed via its
-    // own existing (not-yet-picked) items.
+    // Don't re-offer bin quantity already claimed by this line's own or a
+    // sibling line's not-yet-picked items.
     const reservedByCell = new Map<string, number>();
-    for (const item of existingItems) {
+    for (const item of allItemsForSku) {
       if (item.status === "PICKED") continue;
       const key = `${item.locationId}|${item.batchId ?? ""}`;
       reservedByCell.set(key, (reservedByCell.get(key) ?? 0) + item.qtyToPick);
@@ -206,7 +277,6 @@ export async function reconcileOrderLineAllocation(
 
     const maxSequence = await tx.pickListItem.aggregate({ where: { orderId }, _max: { sequence: true } });
     let sequence = maxSequence._max.sequence ?? 0;
-    let remaining = delta;
     for (const stockItem of stockItems) {
       if (remaining <= 0) break;
       const key = `${stockItem.locationId}|${stockItem.batchId ?? ""}`;
@@ -216,14 +286,14 @@ export async function reconcileOrderLineAllocation(
       const take = Math.min(free, remaining);
       sequence += 1;
       await tx.pickListItem.create({
-        data: { orderId, skuId, locationId: stockItem.locationId, batchId: stockItem.batchId, sequence, qtyToPick: take },
+        data: { orderId, orderLineId, skuId, locationId: stockItem.locationId, batchId: stockItem.batchId, sequence, qtyToPick: take },
       });
       reservedByCell.set(key, reserved + take);
       remaining -= take;
     }
   } else {
     let toRelease = -delta;
-    const releasable = existingItems.filter((i) => i.status !== "PICKED").sort((a, b) => b.sequence - a.sequence);
+    const releasable = thisLineItems.filter((i) => i.status !== "PICKED").sort((a, b) => b.sequence - a.sequence);
     for (const item of releasable) {
       if (toRelease <= 0) break;
       if (item.qtyToPick <= toRelease) {
@@ -232,6 +302,30 @@ export async function reconcileOrderLineAllocation(
       } else {
         await tx.pickListItem.update({ where: { id: item.id }, data: { qtyToPick: item.qtyToPick - toRelease } });
         toRelease = 0;
+      }
+    }
+
+    // Not-yet-picked allocation couldn't cover the whole reduction — the
+    // remainder is already physically picked, so it needs a put-back task
+    // rather than just disappearing from the count.
+    if (toRelease > 0) {
+      const pickedItems = thisLineItems.filter((i) => i.status === "PICKED").sort((a, b) => b.sequence - a.sequence);
+      for (const item of pickedItems) {
+        if (toRelease <= 0) break;
+        const take = Math.min(item.qtyPicked, toRelease);
+        if (take <= 0) continue;
+        await tx.putBackTask.create({
+          data: {
+            orderId,
+            orderLineId,
+            skuId,
+            sourcePickListItemId: item.id,
+            fromLocationId: item.locationId,
+            batchId: item.batchId,
+            quantity: take,
+          },
+        });
+        toRelease -= take;
       }
     }
   }

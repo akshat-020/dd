@@ -49,13 +49,15 @@ model User {
   totpSecret  String?
   totpEnabled Boolean @default(false)
 
-  ordersCreated            Order[]                 @relation("OrderCreatedBy")
-  stockMovements           StockMovement[]
-  pickListItemsDone        PickListItem[]
-  invoiceRefsCreated       InvoiceReference[]
-  purchaseCostRefsCreated  PurchaseCostReference[]
-  auditLogs                AuditLog[]
-  sessions                 Session[]
+  ordersCreated           Order[]                 @relation("OrderCreatedBy")
+  stockMovements          StockMovement[]
+  pickListItemsDone       PickListItem[]
+  invoiceRefsCreated      InvoiceReference[]
+  purchaseCostRefsCreated PurchaseCostReference[]
+  auditLogs               AuditLog[]
+  sessions                Session[]
+  putBacksConfirmed       PutBackTask[]
+  proformaInvoicesCreated ProformaInvoice[]
 }
 
 // Server-side session record backing each JWT (the token embeds this row's
@@ -93,12 +95,14 @@ model Sku {
   altUnitName   String?
   altUnitFactor Int?
 
-  batches         SkuBatch[]
-  stockItems      StockItem[]
-  stockMovements  StockMovement[]
-  orderLines      OrderLine[]
-  pickListItems   PickListItem[]
-  invoiceRefLines InvoiceReferenceLine[]
+  batches              SkuBatch[]
+  stockItems           StockItem[]
+  stockMovements       StockMovement[]
+  orderLines           OrderLine[]
+  pickListItems        PickListItem[]
+  invoiceRefLines      InvoiceReferenceLine[]
+  putBackTasks         PutBackTask[]
+  proformaInvoiceLines ProformaInvoiceLine[]
 }
 
 // A labeled batch/lot of a SKU, created at purchase or production receipt —
@@ -108,20 +112,20 @@ model Sku {
 // more PurchaseCostReferences — same physical-event/cost-event split as
 // Order vs. InvoiceReference on the sales side.
 model SkuBatch {
-  id                String   @id @default(cuid())
-  sku               Sku      @relation(fields: [skuId], references: [id])
-  skuId             String
-  batchCode         String
-  sourceType        String // PURCHASE | PRODUCTION
-  receivedQuantity  Int? // declared at inward-entry time; null for pre-existing/legacy batches
-  supplierRef       String? // supplier's own PO/invoice/delivery number, distinct from our batchCode
-  receivedDate      DateTime @default(now())
-  note              String?
-  createdAt         DateTime @default(now())
+  id               String   @id @default(cuid())
+  sku              Sku      @relation(fields: [skuId], references: [id])
+  skuId            String
+  batchCode        String
+  sourceType       String // PURCHASE | PRODUCTION
+  receivedQuantity Int? // declared at inward-entry time; null for pre-existing/legacy batches
+  supplierRef      String? // supplier's own PO/invoice/delivery number, distinct from our batchCode
+  receivedDate     DateTime @default(now())
+  note             String?
+  createdAt        DateTime @default(now())
 
-  stockItems      StockItem[]
-  stockMovements  StockMovement[]
-  costReferences  PurchaseCostReference[]
+  stockItems     StockItem[]
+  stockMovements StockMovement[]
+  costReferences PurchaseCostReference[]
 
   @@unique([skuId, batchCode])
 }
@@ -139,6 +143,8 @@ model Location {
   stockItems     StockItem[]
   stockMovements StockMovement[]
   pickListItems  PickListItem[]
+  putBacksFrom   PutBackTask[]   @relation("PutBackFromLocation")
+  putBacksTo     PutBackTask[]   @relation("PutBackToLocation")
 }
 
 // Live quantity of a SKU (optionally a specific batch) at a specific location.
@@ -158,40 +164,42 @@ model StockItem {
 // Append-only ledger of every stock change. This is the audit trail for
 // pain point #6 (who moved what, when).
 model StockMovement {
-  id         String    @id @default(cuid())
-  sku        Sku       @relation(fields: [skuId], references: [id])
-  skuId      String
-  location   Location  @relation(fields: [locationId], references: [id])
-  locationId String
-  batch      SkuBatch? @relation(fields: [batchId], references: [id])
-  batchId    String?
-  quantity   Int // signed delta: positive = in, negative = out
-  type       String // INBOUND | OUTBOUND | TRANSFER_IN | TRANSFER_OUT | ADJUSTMENT
-  reason     String?
-  refOrderId String?
-  refInvoiceRefId String?
+  id                String    @id @default(cuid())
+  sku               Sku       @relation(fields: [skuId], references: [id])
+  skuId             String
+  location          Location  @relation(fields: [locationId], references: [id])
+  locationId        String
+  batch             SkuBatch? @relation(fields: [batchId], references: [id])
+  batchId           String?
+  quantity          Int // signed delta: positive = in, negative = out
+  type              String // INBOUND | OUTBOUND | TRANSFER_IN | TRANSFER_OUT | ADJUSTMENT
+  reason            String?
+  refOrderId        String?
+  refInvoiceRefId   String?
   relatedMovementId String? // links the two legs of a TRANSFER
-  user       User      @relation(fields: [userId], references: [id])
-  userId     String
-  createdAt  DateTime  @default(now())
+  user              User      @relation(fields: [userId], references: [id])
+  userId            String
+  createdAt         DateTime  @default(now())
 }
 
 model Order {
-  id                 String    @id @default(cuid())
-  orderNumber        String    @unique
-  buyerName          String
-  buyerContact       String?
-  status             String    @default("DRAFT") // DRAFT | FINALIZED | LOADED | INVOICED | CANCELLED
+  id                  String    @id @default(cuid())
+  orderNumber         String    @unique
+  buyerName           String
+  buyerContact        String?
+  status              String    @default("DRAFT") // DRAFT | FINALIZED | LOADED | INVOICED | CANCELLED
   vehicleCapacityNote String?
-  createdBy          User      @relation("OrderCreatedBy", fields: [createdById], references: [id])
-  createdById        String
-  createdAt          DateTime  @default(now())
-  finalizedAt        DateTime?
-  loadedAt           DateTime?
+  createdBy           User      @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  createdById         String
+  createdAt           DateTime  @default(now())
+  finalizedAt         DateTime?
+  loadedAt            DateTime?
 
-  lines            OrderLine[]
+  lines             OrderLine[]
   pickListItems     PickListItem[]
   invoiceReferences InvoiceReference[]
+  putBackTasks      PutBackTask[]
+  proformaInvoices  ProformaInvoice[]
 }
 
 model OrderLine {
@@ -222,6 +230,9 @@ model OrderLine {
   // Prisma `select`/`include` for non-privileged roles (structural
   // separation, not just a UI hide).
   price OrderLinePrice?
+
+  pickListItems PickListItem[]
+  putBackTasks  PutBackTask[]
 }
 
 model OrderLinePrice {
@@ -255,6 +266,17 @@ model PickListItem {
   pickedById String?
   pickedAt   DateTime?
 
+  // Which order line this allocation belongs to — required for every row
+  // created going forward. Nullable only because rows created before this
+  // field existed can't be disambiguated when the same SKU appeared as more
+  // than one line on the same order (see the multi-unit-addendum follow-up
+  // bug report: without this, reconcileOrderLineAllocation and the pick-
+  // confirm handler had to guess which line an allocation belonged to by
+  // (orderId, skuId) alone, which silently mis-allocated stock whenever a
+  // SKU appeared on two lines of the same order).
+  orderLine   OrderLine? @relation(fields: [orderLineId], references: [id])
+  orderLineId String?
+
   // Set when this row exists because a previous pick came up short (picked
   // less than qtyToPick) — an auto-generated follow-up task for the
   // remainder, rather than something finalize itself allocated. `note`
@@ -274,33 +296,35 @@ model PickListItem {
   pickedUnit    String?
   pickedUnitQty Int?
   boxesOpened   Int     @default(0)
+
+  putBackTasks PutBackTask[]
 }
 
 model InvoiceReference {
-  id                 String    @id @default(cuid())
-  tallyInvoiceNumber String    @unique
-  order              Order     @relation(fields: [orderId], references: [id])
+  id                 String   @id @default(cuid())
+  tallyInvoiceNumber String   @unique
+  order              Order    @relation(fields: [orderId], references: [id])
   orderId            String
-  date               DateTime  @default(now())
-  status             String    @default("ACTIVE") // ACTIVE | CANCELLED | ADJUSTED
-  createdBy          User      @relation(fields: [createdById], references: [id])
+  date               DateTime @default(now())
+  status             String   @default("ACTIVE") // ACTIVE | CANCELLED | ADJUSTED
+  createdBy          User     @relation(fields: [createdById], references: [id])
   createdById        String
-  createdAt          DateTime  @default(now())
+  createdAt          DateTime @default(now())
 
   lines InvoiceReferenceLine[]
 }
 
 model InvoiceReferenceLine {
-  id                  String            @id @default(cuid())
-  invoiceReference    InvoiceReference  @relation(fields: [invoiceReferenceId], references: [id])
-  invoiceReferenceId  String
-  sku                 Sku               @relation(fields: [skuId], references: [id])
-  skuId               String
-  qty                 Int // in `unit` if set, else the SKU's base unit — this is what was billed
+  id                 String           @id @default(cuid())
+  invoiceReference   InvoiceReference @relation(fields: [invoiceReferenceId], references: [id])
+  invoiceReferenceId String
+  sku                Sku              @relation(fields: [skuId], references: [id])
+  skuId              String
+  qty                Int // in `unit` if set, else the SKU's base unit — this is what was billed
   // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
   // Price applies per 1 of `unit` — never auto-derived from a base-unit
   // price × factor, since box/bulk pricing commonly carries its own margin.
-  price               String
+  price              String
 
   // Null means base unit (pre-multi-unit rows, or billed in the SKU's base
   // unit). unitFactor is frozen at entry time, same reasoning as
@@ -346,4 +370,93 @@ model AuditLog {
   createdAt    DateTime @default(now())
   previousHash String?
   hash         String
+}
+
+// Round-4 operational-flow addendum: a Final Qty reduction after some (or
+// all) of that line's quantity was already physically picked doesn't just
+// erase the excess — it has to come back to a shelf. This is that pending
+// return task, created by reconcileOrderLineAllocation the moment a
+// decrease can't be fully absorbed by not-yet-picked allocation alone (see
+// stock.ts). Quantity here is deliberately NOT reflected in any StockItem
+// row until confirmed — it's "picked, not yet returned," visible via this
+// row (and the order line's derived pendingPutBackQty) rather than either
+// silently vanishing from the count or silently reappearing as available
+// stock before it's physically back on a shelf.
+model PutBackTask {
+  id                   String       @id @default(cuid())
+  order                Order        @relation(fields: [orderId], references: [id])
+  orderId              String
+  orderLine            OrderLine    @relation(fields: [orderLineId], references: [id])
+  orderLineId          String
+  sku                  Sku          @relation(fields: [skuId], references: [id])
+  skuId                String
+  // The specific PICKED PickListItem this quantity is being clawed back
+  // from — confirming this task decrements that row's qtyPicked (and the
+  // order line's), not just any row for the same line.
+  sourcePickListItem   PickListItem @relation(fields: [sourcePickListItemId], references: [id])
+  sourcePickListItemId String
+  fromLocation         Location     @relation("PutBackFromLocation", fields: [fromLocationId], references: [id])
+  fromLocationId       String
+  batchId              String?
+  quantity             Int
+  status               String       @default("PENDING") // PENDING | CONFIRMED
+  toLocation           Location?    @relation("PutBackToLocation", fields: [toLocationId], references: [id])
+  toLocationId         String?
+  confirmedBy          User?        @relation(fields: [confirmedById], references: [id])
+  confirmedById        String?
+  confirmedAt          DateTime?
+  createdAt            DateTime     @default(now())
+}
+
+// Company bank details shown on a Proforma Invoice for advance-payment
+// collection. Singleton row (id "singleton") — Owner-editable, not a
+// per-order or per-user setting.
+model CompanySettings {
+  id                String   @id @default("singleton")
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankIfsc          String?
+  bankName          String?
+  // SINGLE = one label per "page" (thermal/continuous-feed printer). GRID =
+  // several labels laid out on a standard sheet (regular printer + adhesive
+  // label sheets). Set once here rather than hard-coded to one printer —
+  // see the label-printing addendum, item 6.
+  labelPrintFormat  String   @default("SINGLE")
+  updatedAt         DateTime @updatedAt
+  updatedById       String?
+}
+
+// A Proforma Invoice — a preliminary, non-statutory document sent to the
+// buyer before the actual Tally tax invoice (InvoiceReference). Its own
+// numbering series (PI-YYYY-NNNN) so it can never collide with or be
+// mistaken for a real invoice number. Reissuing (e.g. after a Final Qty
+// change) creates a new row with an incremented version and marks the
+// previous one SUPERSEDED, rather than mutating history — so it's always
+// clear which PI is current and what an earlier version said.
+model ProformaInvoice {
+  id          String   @id @default(cuid())
+  piNumber    String   @unique
+  order       Order    @relation(fields: [orderId], references: [id])
+  orderId     String
+  version     Int      @default(1)
+  status      String   @default("ACTIVE") // ACTIVE | SUPERSEDED
+  issueDate   DateTime @default(now())
+  validUntil  DateTime
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdById String
+  createdAt   DateTime @default(now())
+
+  lines ProformaInvoiceLine[]
+}
+
+model ProformaInvoiceLine {
+  id                String          @id @default(cuid())
+  proformaInvoice   ProformaInvoice @relation(fields: [proformaInvoiceId], references: [id])
+  proformaInvoiceId String
+  sku               Sku             @relation(fields: [skuId], references: [id])
+  skuId             String
+  qty               Int // in `unit`
+  unit              String
+  // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
+  unitPrice         String
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, qrImageUrl } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { Location } from "../api/types";
+import { LabelPrintPanel } from "../components/LabelPrintPanel";
 
 export default function LocationsPage() {
   const { user } = useAuth();
@@ -350,17 +351,20 @@ function LocationRow({ location, canEdit, onChanged }: { location: Location; can
 }
 
 function PrintSheet({ locations }: { locations: Location[] }) {
+  // Note: LabelPrintPanel's own `.print-area` output must never sit under a
+  // `print:hidden` (display:none) ancestor — that would drop it from the
+  // print output entirely, not just keep it visually hidden — so the
+  // on-screen-only wrapper below stops short of wrapping it.
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 print:border-none">
-      <div className="mb-3 flex items-center justify-between print:hidden">
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Print on adhesive label sheets, laminate, and stick at a consistent position on every rack/bin.
-        </p>
-        <button onClick={() => window.print()} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900">
-          Print
-        </button>
-      </div>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+      <p className="mb-3 text-sm text-slate-500 dark:text-slate-400 print:hidden">
+        Print on adhesive label sheets, laminate, and stick at a consistent position on every rack/bin.
+      </p>
+      {/* Not wrapped in a `print:hidden` div — LabelPrintPanel tags its own
+          on-screen controls that way internally, and its print-only output
+          must not sit under any display:none ancestor (see note above). */}
+      <LabelPrintPanel labels={locations.map((l) => ({ id: l.id, qrUrl: qrImageUrl("location", l.id), primary: l.code }))} />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 print:hidden">
         {locations.map((l) => (
           <div key={l.id} className="flex flex-col items-center rounded-lg border border-slate-200 p-2 text-center dark:border-slate-700">
             <img src={qrImageUrl("location", l.id)} alt={l.code} className="h-24 w-24" />

@@ -25,6 +25,46 @@ function canAccessOrder(user: { id: string; role: string }, order: { status: str
   return user.role === "OWNER" || order.createdById === user.id;
 }
 
+// Role-safe one-line summary for an audit entry — never mentions price,
+// regardless of what the entry's before/after blob actually contains (an
+// Owner/Accountant's edit can capture price data in `after`; a Sales
+// viewer must never see that raw blob at all, only this summary). Full
+// before/after detail is attached separately by the /:id/audit handler,
+// only for roles that can already see pricing.
+function describeAuditEntry(entry: { action: string; entityType: string; after: string | null }): string {
+  const after = entry.after ? JSON.parse(entry.after) : null;
+  switch (`${entry.entityType}:${entry.action}`) {
+    case "Order:CREATE":
+      return "Order created";
+    case "Order:UPDATE":
+      return "Order edited";
+    case "Order:FINALIZE":
+      return "Order finalized — pick list generated";
+    case "Order:CANCEL":
+      return "Order cancelled";
+    case "Order:SET_PRICING":
+      return "Pricing updated";
+    case "PickListItem:PICK_CONFIRM":
+      return after?.boxesOpened > 0 ? "Item picked (box opened to fulfill quantity)" : "Item picked";
+    case "PickListItem:PICK_SHORTFALL":
+      return `Partial pick — shortfall of ${after?.shortfall ?? "?"} follow-up created`;
+    case "InvoiceReference:CREATE":
+      return "Invoice reference logged";
+    case "InvoiceReference:CANCEL":
+      return "Invoice reference cancelled";
+    case "InvoiceReference:ADJUST":
+      return "Invoice reference adjusted";
+    case "PutBackTask:PUT_BACK_CONFIRM":
+      return "Put-back confirmed — stock returned to shelf";
+    case "ProformaInvoice:CREATE":
+      return "Proforma Invoice generated";
+    case "ProformaInvoice:REISSUE":
+      return "Proforma Invoice reissued";
+    default:
+      return `${entry.action} — ${entry.entityType}`;
+  }
+}
+
 async function serializeOrder(orderId: string, includePrice: boolean) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -39,11 +79,25 @@ async function serializeOrder(orderId: string, includePrice: boolean) {
     },
   });
   if (!order) return null;
+
+  // Quantity currently "in limbo" per line — physically picked, no longer
+  // needed at the reduced Final Qty, but not yet physically confirmed back
+  // on a shelf (see reconcileOrderLineAllocation's PutBackTask creation).
+  // Surfaced here rather than left implicit in qtyPicked vs qtyFinalized so
+  // the UI has one clear signal for "this line has a pending return."
+  const pendingPutBacks = await prisma.putBackTask.groupBy({
+    by: ["orderLineId"],
+    where: { orderId, status: "PENDING" },
+    _sum: { quantity: true },
+  });
+  const pendingByLine = new Map(pendingPutBacks.map((p) => [p.orderLineId, p._sum.quantity ?? 0]));
+
   return {
     ...order,
     lines: order.lines.map((line: any) => {
       const { price, ...rest } = line;
-      return includePrice ? { ...rest, unitPrice: price ? decryptNumber(price.unitPrice) : null } : rest;
+      const withPending = { ...rest, pendingPutBackQty: pendingByLine.get(line.id) ?? 0 };
+      return includePrice ? { ...withPending, unitPrice: price ? decryptNumber(price.unitPrice) : null } : withPending;
     }),
   };
 }
@@ -53,25 +107,55 @@ async function serializeOrder(orderId: string, includePrice: boolean) {
 // this router), plus /api/reports/my-task-history for their own completed
 // work. See the permission model addendum.
 ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
-  const { status } = req.query;
+  const { status, search, from, to } = req.query;
   const { id: userId, role } = req.user!;
 
+  const statusFilter = typeof status === "string" && status ? status : undefined;
+  const searchTerm = typeof search === "string" && search.trim() ? search.trim() : undefined;
+  const fromDate = typeof from === "string" && from ? new Date(from) : undefined;
+  const toDate = typeof to === "string" && to ? new Date(to) : undefined;
+
   // Draft orders are scoped to their creator (+ Owner) at the query level,
-  // not filtered out afterward — see canAccessOrder above.
-  const statusFilter = typeof status === "string" ? status : undefined;
-  let where: Record<string, unknown>;
-  if (role === "OWNER") {
-    where = statusFilter ? { status: statusFilter } : {};
-  } else if (statusFilter === "DRAFT") {
-    where = { status: "DRAFT", createdById: userId };
-  } else if (statusFilter) {
-    where = { status: statusFilter };
-  } else {
-    where = { OR: [{ status: { not: "DRAFT" } }, { createdById: userId }] };
+  // not filtered out afterward — see canAccessOrder above. AND-ing this in
+  // with every other filter (rather than branching on each combination)
+  // also naturally handles "explicitly filtering to DRAFT as a non-Owner"
+  // correctly: {status: DRAFT} AND ({status != DRAFT} OR {own}) reduces to
+  // {status: DRAFT, own} on its own.
+  const roleScope: Record<string, unknown> = role === "OWNER" ? {} : { OR: [{ status: { not: "DRAFT" } }, { createdById: userId }] };
+
+  const filters: Record<string, unknown>[] = [roleScope];
+  if (statusFilter) filters.push({ status: statusFilter });
+  if (fromDate) filters.push({ createdAt: { gte: fromDate } });
+  if (toDate) filters.push({ createdAt: { lte: toDate } });
+  if (searchTerm) {
+    filters.push({
+      OR: [
+        { orderNumber: { contains: searchTerm, mode: "insensitive" } },
+        { buyerName: { contains: searchTerm, mode: "insensitive" } },
+        {
+          lines: {
+            some: {
+              sku: { OR: [{ code: { contains: searchTerm, mode: "insensitive" } }, { name: { contains: searchTerm, mode: "insensitive" } }] },
+            },
+          },
+        },
+      ],
+    });
+  }
+
+  // With no explicit filter at all, default to a view that stays usable as
+  // order volume grows: recent orders (last 3 days) plus anything still
+  // active regardless of age — an old order still awaiting dispatch
+  // shouldn't disappear just because it's older than the recency window.
+  // Everything else is one search/filter away, not hidden entirely.
+  const hasExplicitFilter = !!statusFilter || !!searchTerm || !!fromDate || !!toDate;
+  if (!hasExplicitFilter) {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    filters.push({ OR: [{ createdAt: { gte: threeDaysAgo } }, { status: { notIn: ["LOADED", "INVOICED", "CANCELLED"] } }] });
   }
 
   const orders = await prisma.order.findMany({
-    where,
+    where: { AND: filters },
     include: { createdBy: { select: { id: true, name: true } }, lines: { include: { sku: true } } },
     orderBy: { createdAt: "desc" },
   });
@@ -87,6 +171,54 @@ ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req
   if (!raw || !canAccessOrder(req.user!, raw)) return res.status(404).json({ error: "Order not found" });
   const order = await serializeOrder(req.params.id, canSeePrice(req.user!.role));
   res.json(order);
+});
+
+// Per-order Activity/History — who created it, who picked each line (and
+// whether it was full/partial/a box-break), who logged the Invoice
+// Reference, and any edits, all in one chronological view instead of
+// raw logs buried in the backend. The underlying audit trail already
+// exists (see lib/audit.ts) — this just queries and formats it per order,
+// no new instrumentation. Sales gets a role-safe summary of each event
+// (e.g. "Invoice reference logged") with no price data attached; Owner/
+// Accountant additionally get the full before/after detail.
+ordersRouter.get("/:id/audit", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
+  const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
+  if (!raw || !canAccessOrder(req.user!, raw)) return res.status(404).json({ error: "Order not found" });
+
+  const orderId = req.params.id;
+  const [pickItems, invoiceRefs, putBackTasks, proformaInvoices] = await Promise.all([
+    prisma.pickListItem.findMany({ where: { orderId }, select: { id: true } }),
+    prisma.invoiceReference.findMany({ where: { orderId }, select: { id: true } }),
+    prisma.putBackTask.findMany({ where: { orderId }, select: { id: true } }),
+    prisma.proformaInvoice.findMany({ where: { orderId }, select: { id: true } }),
+  ]);
+
+  const entries = await prisma.auditLog.findMany({
+    where: {
+      OR: [
+        { entityType: "Order", entityId: orderId },
+        { entityType: "PickListItem", entityId: { in: pickItems.map((i) => i.id) } },
+        { entityType: "InvoiceReference", entityId: { in: invoiceRefs.map((i) => i.id) } },
+        { entityType: "PutBackTask", entityId: { in: putBackTasks.map((i) => i.id) } },
+        { entityType: "ProformaInvoice", entityId: { in: proformaInvoices.map((i) => i.id) } },
+      ],
+    },
+    include: { user: { select: { id: true, name: true, role: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const showDetail = canSeePrice(req.user!.role);
+  res.json(
+    entries.map((e) => ({
+      id: e.id,
+      action: e.action,
+      entityType: e.entityType,
+      createdAt: e.createdAt,
+      user: e.user,
+      summary: describeAuditEntry(e),
+      ...(showDetail ? { before: e.before ? JSON.parse(e.before) : null, after: e.after ? JSON.parse(e.after) : null } : {}),
+    }))
+  );
 });
 
 const orderLineInput = z.object({
@@ -214,13 +346,17 @@ const updateLinesSchema = z.object({
 // quantity field, and it's what actually drives stock allocation.
 //
 // Editable while DRAFT (no PickListItems exist yet, so this is a plain
-// field update) or FINALIZED (up to the point loading is complete —
-// LOADED/INVOICED/CANCELLED are locked). Editing a FINALIZED order's
-// quantities reconciles the pick list allocation immediately
-// (reconcileOrderLineAllocation) so nothing about location assignments
-// goes stale; by the time an order can be INVOICED it's already past
-// LOADED, which is locked, so the Invoice Reference layer can never see a
-// post-invoice edit in the first place.
+// field update), FINALIZED, or LOADED (up to the point it's actually
+// invoiced — INVOICED/CANCELLED are locked). LOADED is deliberately still
+// editable, not locked the moment picking completes: the operational-flow
+// addendum's post-pick adjustment scenario is exactly "picked, not yet
+// dispatched" — i.e. LOADED — and reducing a line there has to be allowed
+// so the put-back path (reconcileOrderLineAllocation) can trigger. Editing
+// a FINALIZED or LOADED order's quantities reconciles the pick list
+// allocation immediately, so nothing about location assignments (or, for
+// a reduction below what's picked, the resulting put-back task) goes
+// stale; once an order is actually INVOICED it's locked, so the Invoice
+// Reference layer can never see a post-invoice edit in the first place.
 ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequest, res) => {
   const parsed = updateLinesSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -228,10 +364,10 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
   }
   const before = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
   if (!before || !canAccessOrder(req.user!, before)) return res.status(404).json({ error: "Order not found" });
-  if (before.status !== "DRAFT" && before.status !== "FINALIZED") {
-    return res.status(409).json({ error: "Only draft or finalized (not yet loaded) orders can be edited" });
+  if (before.status !== "DRAFT" && before.status !== "FINALIZED" && before.status !== "LOADED") {
+    return res.status(409).json({ error: "Only draft, finalized, or loaded (not yet invoiced) orders can be edited" });
   }
-  const isFinalized = before.status === "FINALIZED";
+  const isFinalized = before.status === "FINALIZED" || before.status === "LOADED";
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -247,7 +383,7 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
             if (existing.qtyPicked > 0) {
               throw new Error(`Cannot remove ${existing.skuId} — it's already been partially or fully picked`);
             }
-            await tx.pickListItem.deleteMany({ where: { orderId: before.id, skuId: existing.skuId, status: { not: "PICKED" } } });
+            await tx.pickListItem.deleteMany({ where: { orderLineId: existing.id, status: { not: "PICKED" } } });
           }
           await tx.orderLine.delete({ where: { id: line.id } });
         } else if (line.id) {
@@ -264,7 +400,7 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
             data.finalUnitQty = line.qtyFinalized;
             data.finalFactor = factor;
             if (isFinalized) {
-              await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: existing.skuId, newQty: baseQty });
+              await reconcileOrderLineAllocation(tx, { orderId: before.id, orderLineId: existing.id, skuId: existing.skuId, newQty: baseQty });
             }
           }
           await tx.orderLine.update({ where: { id: line.id }, data });
@@ -289,7 +425,7 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
             },
           });
           if (isFinalized) {
-            await reconcileOrderLineAllocation(tx, { orderId: before.id, skuId: newLine.skuId, newQty: baseQty });
+            await reconcileOrderLineAllocation(tx, { orderId: before.id, orderLineId: newLine.id, skuId: newLine.skuId, newQty: baseQty });
           }
         }
       }
@@ -319,10 +455,7 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
     return res.status(409).json({ error: "Only draft orders can be finalized" });
   }
 
-  const shortfalls: { skuId: string; requested: number; available: number }[] = [];
-
   const result = await prisma.$transaction(async (tx) => {
-    const pickListRows: { skuId: string; locationId: string; batchId: string | null; qty: number }[] = [];
     // Same commitment accounting as the stock-check endpoint — without this,
     // two orders finalizing around the same time could each see the full
     // physical on-hand quantity and both succeed, oversubscribing the same
@@ -334,7 +467,46 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
       order.lines.map((l) => l.skuId),
       order.id
     );
+    const onHandBySku = new Map(
+      (
+        await tx.stockItem.groupBy({ by: ["skuId"], where: { skuId: { in: order.lines.map((l) => l.skuId) } }, _sum: { quantity: true } })
+      ).map((g) => [g.skuId, g._sum.quantity ?? 0])
+    );
 
+    // Phase 1: a dry run across every line, checking sufficiency *before*
+    // writing anything — this is what lets a shortfall on line 3 still
+    // report shortfalls on lines 1 and 2 in the same response, instead of
+    // aborting after the first one found. Two lines requesting the same
+    // SKU compete for the same on-hand total, so their demand has to
+    // accumulate across this pass (claimedThisRun) — checking each line
+    // against the raw on-hand figure independently would let both "pass"
+    // even when there isn't enough for both combined.
+    const shortfalls: { skuId: string; requested: number; available: number }[] = [];
+    const claimedThisRun = new Map<string, number>();
+    for (const line of order.lines) {
+      const qty = line.qtyFinalized ?? line.qtyRequested;
+      if (qty === 0) continue;
+      const totalOnHand = onHandBySku.get(line.skuId) ?? 0;
+      const committedElsewhere = committed.get(line.skuId) ?? 0;
+      const claimedSoFar = claimedThisRun.get(line.skuId) ?? 0;
+      const trulyAvailable = totalOnHand - committedElsewhere - claimedSoFar;
+      if (trulyAvailable < qty) {
+        shortfalls.push({ skuId: line.skuId, requested: qty, available: Math.max(trulyAvailable, 0) });
+      } else {
+        claimedThisRun.set(line.skuId, claimedSoFar + qty);
+      }
+    }
+    if (shortfalls.length > 0) {
+      return { shortfalls };
+    }
+
+    // Phase 2: sufficiency is guaranteed, so actually allocate — one line
+    // at a time, via the same per-line reconciler PATCH /orders/:id uses,
+    // so a fresh finalize and a later Final-Qty edit share one allocation
+    // path instead of two subtly different implementations. Because each
+    // call commits its PickListItem rows within this same transaction, a
+    // later line sharing a SKU with an earlier one correctly sees (and
+    // doesn't re-claim) what that earlier line already took.
     for (const line of order.lines) {
       const qty = line.qtyFinalized ?? line.qtyRequested;
       // Carry the requested unit/factor over as the final unit/factor when
@@ -346,52 +518,23 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
           : { finalUnit: line.requestedUnit, finalUnitQty: line.requestedUnitQty, finalFactor: line.requestedFactor };
       await tx.orderLine.update({ where: { id: line.id }, data: { qtyFinalized: qty, ...finalUnitFields } });
       if (qty === 0) continue;
-
-      const stockItems = await tx.stockItem.findMany({
-        where: { skuId: line.skuId, quantity: { gt: 0 } },
-        orderBy: { quantity: "desc" },
-      });
-      const totalOnHand = stockItems.reduce((sum, s) => sum + s.quantity, 0);
-      const committedElsewhere = committed.get(line.skuId) ?? 0;
-      const trulyAvailable = totalOnHand - committedElsewhere;
-      if (trulyAvailable < qty) {
-        shortfalls.push({ skuId: line.skuId, requested: qty, available: Math.max(trulyAvailable, 0) });
-        continue;
-      }
-
-      let remaining = qty;
-      for (const item of stockItems) {
-        if (remaining <= 0) break;
-        const take = Math.min(item.quantity, remaining);
-        pickListRows.push({ skuId: line.skuId, locationId: item.locationId, batchId: item.batchId, qty: take });
-        remaining -= take;
-      }
+      await reconcileOrderLineAllocation(tx, { orderId: order.id, orderLineId: line.id, skuId: line.skuId, newQty: qty });
     }
 
-    if (shortfalls.length > 0) {
-      return { shortfalls };
+    // Re-sequence by location code so the loading team follows one route
+    // through the warehouse instead of zig-zagging — allocating per line
+    // (above) means rows land in whatever order each line's own greedy
+    // allocation produced them, not grouped by location across the order.
+    const created = await tx.pickListItem.findMany({ where: { orderId: order.id }, include: { location: true }, orderBy: { sequence: "asc" } });
+    const sorted = [...created].sort((a, b) => a.location.code.localeCompare(b.location.code));
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].sequence !== i + 1) {
+        await tx.pickListItem.update({ where: { id: sorted[i].id }, data: { sequence: i + 1 } });
+      }
     }
-
-    // Sequence by location code so the loading team follows one route
-    // through the warehouse instead of zig-zagging.
-    const locationIds = [...new Set(pickListRows.map((r) => r.locationId))];
-    const locations = await tx.location.findMany({ where: { id: { in: locationIds } } });
-    const codeById = new Map(locations.map((l) => [l.id, l.code]));
-    pickListRows.sort((a, b) => (codeById.get(a.locationId) ?? "").localeCompare(codeById.get(b.locationId) ?? ""));
-
-    await tx.pickListItem.createMany({
-      data: pickListRows.map((r, idx) => ({
-        orderId: order.id,
-        skuId: r.skuId,
-        locationId: r.locationId,
-        batchId: r.batchId,
-        sequence: idx + 1,
-        qtyToPick: r.qty,
-      })),
-    });
 
     await tx.order.update({ where: { id: order.id }, data: { status: "FINALIZED", finalizedAt: new Date() } });
-    return { shortfalls: [] };
+    return { shortfalls: [] as { skuId: string; requested: number; available: number }[] };
   });
 
   if (result.shortfalls.length > 0) {

@@ -21,6 +21,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/orders/new", label: "New Order", roles: ["OWNER", "SALES"] },
   { to: "/picking", label: "Picking", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
   { to: "/receiving", label: "Receiving", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
+  { to: "/stock-transfer", label: "Transfer Stock", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
+  { to: "/put-backs", label: "Put-backs", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
   { to: "/my-tasks", label: "My Tasks", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
@@ -30,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },
+  { to: "/settings", label: "Settings", roles: ["OWNER"] },
   { to: "/security", label: "Security" },
 ];
 

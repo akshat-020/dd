@@ -3,6 +3,7 @@ import { api, ApiError, qrImageUrl } from "../api/client";
 import type { Location, Sku, SkuBatch } from "../api/types";
 import { QrScannerModal } from "../components/QrScannerModal";
 import { SkuCombobox } from "../components/SkuCombobox";
+import { LabelPrintPanel } from "../components/LabelPrintPanel";
 import { useAuth } from "../auth/AuthContext";
 import { compoundBreakdown } from "../lib/units";
 
@@ -217,15 +218,27 @@ export default function Receiving() {
 
       {batch && activeSku && (
         <div className="space-y-4">
+          {/* Not `print:hidden` as a whole — LabelPrintPanel below renders
+              its own isolated print-only output as a sibling of its
+              on-screen controls, and that must not sit under a
+              display:none ancestor or it would never print either. */}
           <div className="flex flex-col items-center rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <img src={qrImageUrl("batch", batch.id)} alt={batch.batchCode} className="h-40 w-40" />
-            <div className="mt-2 text-center font-mono text-sm font-semibold">{activeSku.code} · {batch.batchCode}</div>
-            <div className="flex gap-2">
-              <button onClick={() => window.print()} className="mt-2 rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">
-                Print label
-              </button>
+            <img src={qrImageUrl("batch", batch.id)} alt={batch.batchCode} className="h-40 w-40 print:hidden" />
+            <div className="mt-2 text-center font-mono text-sm font-semibold print:hidden">{activeSku.code} · {batch.batchCode}</div>
+            <div className="mt-2 flex items-center gap-2">
+              <LabelPrintPanel
+                triggerLabel="Print label"
+                labels={[
+                  {
+                    id: batch.id,
+                    qrUrl: qrImageUrl("batch", batch.id),
+                    primary: activeSku.code,
+                    secondary: [batch.batchCode, new Date(batch.receivedDate).toLocaleDateString()],
+                  },
+                ]}
+              />
               {hasScanAccess && (
-                <button onClick={() => setBatch(null)} className="mt-2 rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">
+                <button onClick={() => setBatch(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">
                   Choose different batch
                 </button>
               )}

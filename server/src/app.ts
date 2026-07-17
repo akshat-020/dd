@@ -15,6 +15,9 @@ import { pricingRouter } from "./routes/pricing.js";
 import { invoiceReferencesRouter } from "./routes/invoiceReferences.js";
 import { reportsRouter } from "./routes/reports.js";
 import { sessionsRouter } from "./routes/sessions.js";
+import { putBacksRouter } from "./routes/putBacks.js";
+import { settingsRouter } from "./routes/settings.js";
+import { proformaInvoicesRouter } from "./routes/proformaInvoices.js";
 import { corsOptions, apiRateLimit, loginRateLimit, enforceHttps, noIndex } from "./lib/security.js";
 
 export function createApp() {
@@ -51,6 +54,9 @@ export function createApp() {
   app.use("/api/invoice-references", invoiceReferencesRouter);
   app.use("/api/reports", reportsRouter);
   app.use("/api/sessions", sessionsRouter);
+  app.use("/api/put-backs", putBacksRouter);
+  app.use("/api/settings", settingsRouter);
+  app.use("/api/proforma-invoices", proformaInvoicesRouter);
 
   // Serves the built frontend when present, so a single deployed service
   // can host both API and web app (one URL, no CORS to configure between

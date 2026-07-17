@@ -18,6 +18,9 @@ import Users from "./pages/Users";
 import Security from "./pages/Security";
 import MyTasks from "./pages/MyTasks";
 import StockLookup from "./pages/StockLookup";
+import StockTransfer from "./pages/StockTransfer";
+import PutBacks from "./pages/PutBacks";
+import SettingsPage from "./pages/Settings";
 
 function LoginRoute() {
   const { user, loading } = useAuth();
@@ -103,6 +106,30 @@ export default function App() {
               element={
                 <ProtectedRoute roles={["OWNER", "SALES"]}>
                   <StockLookup />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/stock-transfer"
+              element={
+                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
+                  <StockTransfer />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/put-backs"
+              element={
+                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
+                  <PutBacks />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute roles={["OWNER"]}>
+                  <SettingsPage />
                 </ProtectedRoute>
               }
             />

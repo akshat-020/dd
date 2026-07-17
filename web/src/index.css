@@ -22,3 +22,26 @@ input,
 select {
   font-size: 1rem;
 }
+
+/* Label printing (Round 4 #6): printing used to dump the whole page — nav,
+   buttons, surrounding UI — because nothing told the browser what NOT to
+   print. Any component that wants to print isolates its printable content
+   in a `.print-area` wrapper; everything else in the document (app header,
+   nav, the rest of the page) is hidden for the print media only, and the
+   print area is repositioned to the top of the printed page regardless of
+   where it sits in on-screen layout. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}

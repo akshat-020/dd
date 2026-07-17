@@ -124,6 +124,9 @@ export interface OrderLine {
   finalUnit?: string | null;
   finalUnitQty?: number | null;
   finalFactor?: number | null;
+  // Picked-but-not-yet-physically-returned quantity — see PutBackTask.
+  // Zero means nothing pending for this line.
+  pendingPutBackQty?: number;
 }
 
 export interface Order {
@@ -254,4 +257,65 @@ export interface AuditLogEntry {
   after?: string | null;
   createdAt: string;
   user: { id: string; name: string; role: Role };
+}
+
+// Per-order Activity/History entry (GET /orders/:id/audit) — `summary` is
+// always role-safe; `before`/`after` are only present for Owner/Accountant.
+export interface OrderAuditEntry {
+  id: string;
+  action: string;
+  entityType: string;
+  createdAt: string;
+  user: { id: string; name: string; role: Role };
+  summary: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+export interface PutBackTask {
+  id: string;
+  orderId: string;
+  orderLineId: string;
+  skuId: string;
+  sourcePickListItemId: string;
+  fromLocationId: string;
+  batchId?: string | null;
+  quantity: number;
+  status: "PENDING" | "CONFIRMED";
+  toLocationId?: string | null;
+  confirmedAt?: string | null;
+  createdAt: string;
+  sku: Sku;
+  fromLocation: Location;
+  order: { id: string; orderNumber: string; buyerName: string };
+}
+
+export interface CompanySettings {
+  bankAccountName?: string | null;
+  bankAccountNumber?: string | null;
+  bankIfsc?: string | null;
+  bankName?: string | null;
+  labelPrintFormat: "SINGLE" | "GRID";
+}
+
+export interface ProformaInvoiceLine {
+  id: string;
+  skuId: string;
+  qty: number;
+  unit: string;
+  unitPrice: number;
+  sku?: Sku;
+}
+
+export interface ProformaInvoice {
+  id: string;
+  piNumber: string;
+  orderId: string;
+  version: number;
+  status: "ACTIVE" | "SUPERSEDED";
+  issueDate: string;
+  validUntil: string;
+  createdBy: { id: string; name: string };
+  createdAt: string;
+  lines: ProformaInvoiceLine[];
 }

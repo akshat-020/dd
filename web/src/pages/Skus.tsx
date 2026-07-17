@@ -3,6 +3,7 @@ import { api, ApiError, qrImageUrl } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { PurchaseCostReference, Sku, SkuBatch, StockSummaryEntry } from "../api/types";
 import { compoundBreakdown } from "../lib/units";
+import { LabelPrintPanel } from "../components/LabelPrintPanel";
 
 export default function SkusPage() {
   const { hasRole } = useAuth();
@@ -373,10 +374,16 @@ function BatchHistory({ skuId, skuCode }: { skuId: string; skuCode: string }) {
 
   return (
     <div className="space-y-2">
-      <button onClick={() => window.print()} className="text-xs font-medium text-slate-500 underline dark:text-slate-400 print:hidden">
-        Print these labels
-      </button>
-      <div className="flex flex-wrap gap-3">
+      <LabelPrintPanel
+        triggerLabel="Print these labels"
+        labels={batches.map((b) => ({
+          id: b.id,
+          qrUrl: qrImageUrl("batch", b.id),
+          primary: skuCode,
+          secondary: [b.batchCode, new Date(b.receivedDate).toLocaleDateString()],
+        }))}
+      />
+      <div className="flex flex-wrap gap-3 print:hidden">
         {batches.map((b) => (
           <BatchCard key={b.id} batch={b} canSeeCost={canSeeCost} />
         ))}

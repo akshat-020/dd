@@ -130,7 +130,15 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
         },
       });
 
-      const orderLine = await tx.orderLine.findFirst({ where: { orderId: item.orderId, skuId: item.skuId } });
+      // item.orderLineId directly identifies the line this pick belongs to
+      // — looking it up by (orderId, skuId) instead would credit the wrong
+      // line's qtyPicked whenever the same SKU appears on more than one
+      // line of this order. Legacy rows with no orderLineId (pre-dating
+      // this field) fall back to the old lookup rather than crediting
+      // nothing.
+      const orderLine = item.orderLineId
+        ? await tx.orderLine.findUnique({ where: { id: item.orderLineId } })
+        : await tx.orderLine.findFirst({ where: { orderId: item.orderId, skuId: item.skuId } });
       if (orderLine) {
         await tx.orderLine.update({ where: { id: orderLine.id }, data: { qtyPicked: { increment: parsed.data.quantity } } });
       }
@@ -140,6 +148,7 @@ pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: Auth
         await tx.pickListItem.create({
           data: {
             orderId: item.orderId,
+            orderLineId: item.orderLineId,
             skuId: item.skuId,
             locationId: item.locationId,
             batchId: item.batchId,

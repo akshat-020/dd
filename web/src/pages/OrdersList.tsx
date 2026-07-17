@@ -16,14 +16,32 @@ export default function OrdersList() {
   const { hasRole } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const hasExplicitFilter = !!statusFilter || !!search.trim() || !!from || !!to;
+
   useEffect(() => {
-    api
-      .get<Order[]>(statusFilter ? `/orders?status=${statusFilter}` : "/orders")
-      .then(setOrders)
-      .catch((e) => setError(e.message));
-  }, [statusFilter]);
+    // No explicit filter at all -> the server applies its own default
+    // (last 3 days, plus any order still active regardless of age) instead
+    // of dumping every order ever placed. Debounced so typing in the
+    // search box doesn't fire a request per keystroke.
+    const handle = setTimeout(() => {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set("status", statusFilter);
+      if (search.trim()) params.set("search", search.trim());
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      const qs = params.toString();
+      api
+        .get<Order[]>(qs ? `/orders?${qs}` : "/orders")
+        .then(setOrders)
+        .catch((e) => setError(e.message));
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [statusFilter, search, from, to]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -36,18 +54,62 @@ export default function OrdersList() {
         )}
       </div>
 
-      <select
-        value={statusFilter}
-        onChange={(e) => setStatusFilter(e.target.value)}
-        className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-      >
-        <option value="">All statuses</option>
-        {["DRAFT", "FINALIZED", "LOADED", "INVOICED", "CANCELLED"].map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
+      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search order code, buyer, or SKU…"
+          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        />
+        <div className="flex flex-wrap gap-2">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          >
+            <option value="">All statuses</option>
+            {["DRAFT", "FINALIZED", "LOADED", "INVOICED", "CANCELLED"].map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            title="From date"
+          />
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            title="To date"
+          />
+          {hasExplicitFilter && (
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter("");
+                setSearch("");
+                setFrom("");
+                setTo("");
+              }}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+        {!hasExplicitFilter && (
+          <p className="text-xs text-slate-400">
+            Showing orders from the last 3 days, plus any order still awaiting dispatch regardless of age. Search or filter above
+            to reach anything older.
+          </p>
+        )}
+      </div>
 
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p>}
 

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, ApiError } from "../api/client";
+import { api, ApiError, getToken } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { SkuCombobox } from "../components/SkuCombobox";
-import type { Order, PickListItem, Sku, StockCheckResult } from "../api/types";
+import type { Order, OrderAuditEntry, PickListItem, ProformaInvoice, Sku, StockCheckResult } from "../api/types";
 import { availableUnits, compoundBreakdown } from "../lib/units";
 
 export default function OrderDetail() {
@@ -16,6 +16,10 @@ export default function OrderDetail() {
   const [skus, setSkus] = useState<Sku[]>([]);
   const [stockCheck, setStockCheck] = useState<StockCheckResult[]>([]);
   const [pickList, setPickList] = useState<PickListItem[]>([]);
+  const [auditEntries, setAuditEntries] = useState<OrderAuditEntry[]>([]);
+  const [showAudit, setShowAudit] = useState(false);
+  const [proformaInvoices, setProformaInvoices] = useState<ProformaInvoice[]>([]);
+  const [piBusy, setPiBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,9 +39,10 @@ export default function OrderDetail() {
       const o = await api.get<Order>(`/orders/${id}`);
       setOrder(o);
       // Available-stock context is useful while Final Qty is still
-      // editable (DRAFT and FINALIZED, up to loading) — not once the order
-      // is locked and there's nothing left to decide.
-      if (o.status === "DRAFT" || o.status === "FINALIZED") {
+      // editable (DRAFT, FINALIZED, and now LOADED — post-pick adjustments
+      // are allowed up to invoicing) — not once the order is locked and
+      // there's nothing left to decide.
+      if (o.status === "DRAFT" || o.status === "FINALIZED" || o.status === "LOADED") {
         const check = await api.get<StockCheckResult[]>(`/orders/${id}/stock-check`);
         setStockCheck(check);
       }
@@ -45,10 +50,23 @@ export default function OrderDetail() {
         const pl = await api.get<PickListItem[]>(`/picking/orders/${id}`);
         setPickList(pl);
       }
+      if (canSeePrice) {
+        api
+          .get<ProformaInvoice[]>(`/proforma-invoices/order/${id}`)
+          .then(setProformaInvoices)
+          .catch(() => {});
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load order");
     }
-  }, [id]);
+    // Activity/History is visible to every role that can see the order at
+    // all — the API itself decides what detail (price etc.) each role gets
+    // back, so the UI just renders whatever it's given.
+    api
+      .get<OrderAuditEntry[]>(`/orders/${id}/audit`)
+      .then(setAuditEntries)
+      .catch(() => {});
+  }, [id, canSeePrice]);
 
   useEffect(() => {
     load();
@@ -70,9 +88,13 @@ export default function OrderDetail() {
 
   const isDraft = order.status === "DRAFT";
   const isFinalized = order.status === "FINALIZED";
-  // Editable up to the point loading is complete — matches the server's
-  // own lock point (PATCH /orders/:id rejects LOADED/INVOICED/CANCELLED).
-  const isEditable = isDraft || isFinalized;
+  const isLoaded = order.status === "LOADED";
+  // Editable through LOADED — the server now allows editing a fully-picked,
+  // not-yet-invoiced order too (post-pick adjustments: reducing Final Qty
+  // below what's already been picked queues a Put-back task rather than
+  // being rejected). Locked only at INVOICED/CANCELLED, matching the
+  // server's own guard on PATCH /orders/:id.
+  const isEditable = isDraft || isFinalized || isLoaded;
 
   // Left to throw — FinalQtyCell owns the Save button for this field and
   // shows its own per-field saving/success/error state (see #1: an onBlur
@@ -159,6 +181,57 @@ export default function OrderDetail() {
       setError(err instanceof ApiError ? err.message : "Cancel failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  // A PI is a snapshot of the order's current pricing at the moment it's
+  // generated — reusing the same pricing data Pricing.tsx already maintains
+  // rather than asking for prices a second time. If an ACTIVE PI already
+  // exists for this order, this is a reissue (server marks the old one
+  // SUPERSEDED and bumps the version) — same action, the button label is
+  // just informative about which case applies.
+  async function generatePi(validDays: number) {
+    if (!order) return;
+    setPiBusy(true);
+    setError(null);
+    try {
+      const pricing = await api.get<{ lines: { skuId: string; qty: number; unit: string | null; unitQty: number | null; unitPrice: number | null }[] }>(
+        `/orders/${id}/pricing`
+      );
+      if (pricing.lines.length === 0 || pricing.lines.some((l) => l.unitPrice == null)) {
+        setError("Set a unit price for every line (via Manage pricing) before generating a Proforma Invoice.");
+        return;
+      }
+      const validUntil = new Date(Date.now() + validDays * 24 * 60 * 60 * 1000).toISOString();
+      await api.post("/proforma-invoices", {
+        orderId: id,
+        validUntil,
+        lines: pricing.lines.map((l) => ({
+          skuId: l.skuId,
+          qty: l.unitQty ?? l.qty,
+          unit: l.unit ?? order.lines.find((ol) => ol.skuId === l.skuId)?.sku.unit ?? "unit",
+          unitPrice: l.unitPrice,
+        })),
+      });
+      setNotice("Proforma Invoice generated.");
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to generate Proforma Invoice");
+    } finally {
+      setPiBusy(false);
+    }
+  }
+
+  async function openPiPdf(piId: string) {
+    setError(null);
+    try {
+      const token = getToken();
+      const res = await fetch(`/api/proforma-invoices/${piId}/pdf`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+      if (!res.ok) throw new Error("Failed to load PDF");
+      const blob = await res.blob();
+      window.open(URL.createObjectURL(blob), "_blank");
+    } catch {
+      setError("Failed to load Proforma Invoice PDF");
     }
   }
 
@@ -276,7 +349,19 @@ export default function OrderDetail() {
                       formatUnitQty(finalQty, line.sku.unit, line.finalUnit, line.finalUnitQty)
                     )}
                   </td>
-                  {!isDraft && <td className="px-4 py-2">{line.qtyPicked}</td>}
+                  {!isDraft && (
+                    <td className="px-4 py-2">
+                      {line.qtyPicked}
+                      {!!line.pendingPutBackQty && (
+                        <span
+                          className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                          title="Already picked, no longer needed at the new Final Qty — awaiting warehouse confirmation to return it to stock. Not yet counted as available."
+                        >
+                          {line.pendingPutBackQty} pending return
+                        </span>
+                      )}
+                    </td>
+                  )}
                   {isEditable && (
                     <td className={`px-4 py-2 ${check && !check.sufficient ? "text-red-600 dark:text-red-400" : ""}`}>
                       {check ? check.available : "…"}
@@ -369,6 +454,17 @@ export default function OrderDetail() {
           Manage pricing & invoice reference →
         </Link>
       )}
+
+      {canSeePrice && !isDraft && (
+        <ProformaInvoiceSection
+          proformaInvoices={proformaInvoices}
+          busy={piBusy}
+          onGenerate={generatePi}
+          onViewPdf={openPiPdf}
+        />
+      )}
+
+      <ActivityPanel entries={auditEntries} expanded={showAudit} onToggle={() => setShowAudit((v) => !v)} />
 
       {hasRole("OWNER") && order.status !== "LOADED" && order.status !== "INVOICED" && order.status !== "CANCELLED" && (
         <button onClick={handleCancel} disabled={busy} className="w-full rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 dark:border-red-800 dark:text-red-400">
@@ -508,5 +604,117 @@ function FinalQtyCell({
       </div>
       {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
+  );
+}
+
+// Round 4 #5: Proforma Invoice — Owner/Accountant only, listed newest
+// version first (the API already sorts that way). "Generate" and "Reissue"
+// are the same action server-side; the label just reflects which case
+// applies so it's clear a reissue supersedes rather than duplicates.
+function ProformaInvoiceSection({
+  proformaInvoices,
+  busy,
+  onGenerate,
+  onViewPdf,
+}: {
+  proformaInvoices: ProformaInvoice[];
+  busy: boolean;
+  onGenerate: (validDays: number) => void;
+  onViewPdf: (id: string) => void;
+}) {
+  const [validDays, setValidDays] = useState(15);
+  const hasActive = proformaInvoices.some((p) => p.status === "ACTIVE");
+
+  return (
+    <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+      <h2 className="text-base font-semibold text-slate-900 dark:text-slate-50">Proforma Invoice</h2>
+      <p className="text-xs text-slate-400">
+        A preliminary document for advance collection — separate from the Tax Invoice recorded via Invoice Reference. Sending
+        or reissuing a PI never itself moves stock or counts as final billing.
+      </p>
+
+      {proformaInvoices.length > 0 && (
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {proformaInvoices.map((pi) => (
+            <li key={pi.id} className="flex items-center justify-between py-2 text-sm">
+              <span>
+                {pi.piNumber} <span className="text-xs text-slate-400">(v{pi.version})</span>
+                <span
+                  className={`ml-2 rounded-full px-2 py-0.5 text-xs font-medium ${
+                    pi.status === "ACTIVE"
+                      ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
+                      : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                  }`}
+                >
+                  {pi.status}
+                </span>
+              </span>
+              <button onClick={() => onViewPdf(pi.id)} className="text-xs font-medium text-slate-600 underline dark:text-slate-300">
+                View PDF
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex items-center gap-2 pt-1">
+        <label className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+          Valid for (days)
+          <input
+            type="number"
+            min={1}
+            value={validDays}
+            onChange={(e) => setValidDays(Math.max(1, Number(e.target.value) || 1))}
+            className="w-16 rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800"
+          />
+        </label>
+        <button
+          onClick={() => onGenerate(validDays)}
+          disabled={busy}
+          className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+        >
+          {busy ? "Generating…" : hasActive ? "Reissue Proforma Invoice" : "Generate Proforma Invoice"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Round 4 #1: order-level audit visibility. The API already redacts what
+// each role gets back (Sales sees a summary sentence only; Owner/Accountant
+// also get the raw before/after) — this just renders whatever came back,
+// no client-side filtering of its own.
+function ActivityPanel({
+  entries,
+  expanded,
+  onToggle,
+}: {
+  entries: OrderAuditEntry[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-slate-900 dark:text-slate-50"
+      >
+        Activity / history {entries.length > 0 && <span className="text-xs font-normal text-slate-400">({entries.length})</span>}
+        <span className="text-xs text-slate-400">{expanded ? "Hide ▲" : "Show ▼"}</span>
+      </button>
+      {expanded && (
+        <ul className="divide-y divide-slate-100 px-4 pb-3 dark:divide-slate-800">
+          {entries.length === 0 && <li className="py-2 text-sm text-slate-400">No activity recorded yet.</li>}
+          {entries.map((e) => (
+            <li key={e.id} className="py-2 text-sm">
+              <div className="text-slate-700 dark:text-slate-200">{e.summary}</div>
+              <div className="text-xs text-slate-400">
+                {e.user.name} ({e.user.role}) · {new Date(e.createdAt).toLocaleString()}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
