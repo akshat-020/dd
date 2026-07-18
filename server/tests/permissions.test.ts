@@ -123,14 +123,14 @@ describe("composable scan permission: Accountant loses putaway/transfer, Sales c
   });
 
   it("non-Owner cannot grant the scan permission", async () => {
-    const res = await request(app).patch(`/api/users/${sales.user.id}`).set(auth(accountant.token)).send({ canScanPutaway: true });
+    const res = await request(app).put(`/api/users/${sales.user.id}/permissions/inventory.scanPutaway`).set(auth(accountant.token));
     expect(res.status).toBe(403);
   });
 
   it("Owner grants Sales the scan permission, it takes effect immediately, and is audited", async () => {
-    const grantRes = await request(app).patch(`/api/users/${sales.user.id}`).set(auth(owner.token)).send({ canScanPutaway: true });
+    const grantRes = await request(app).put(`/api/users/${sales.user.id}/permissions/inventory.scanPutaway`).set(auth(owner.token));
     expect(grantRes.status).toBe(200);
-    expect(grantRes.body.canScanPutaway).toBe(true);
+    expect(grantRes.body.permissions).toContain("inventory.scanPutaway");
 
     // Same JWT as before — permission check is DB-backed, not baked into the
     // token, so this takes effect without the user needing to re-login.
@@ -138,7 +138,7 @@ describe("composable scan permission: Accountant loses putaway/transfer, Sales c
     expect(putawayRes.status).toBe(201);
 
     const audit = await request(app).get("/api/reports/audit-log?entityType=User").set(auth(owner.token));
-    const grantEntry = audit.body.find((a: any) => a.action === "GRANT_SCAN_ACCESS" && a.entityId === sales.user.id);
+    const grantEntry = audit.body.find((a: any) => a.action === "GRANT_PERMISSION" && a.entityId === sales.user.id);
     expect(grantEntry).toBeTruthy();
     expect(grantEntry.user.id).toBe(owner.user.id);
   });
@@ -149,15 +149,15 @@ describe("composable scan permission: Accountant loses putaway/transfer, Sales c
   });
 
   it("Owner revokes the permission and it takes effect immediately, and is audited", async () => {
-    const revokeRes = await request(app).patch(`/api/users/${sales.user.id}`).set(auth(owner.token)).send({ canScanPutaway: false });
+    const revokeRes = await request(app).delete(`/api/users/${sales.user.id}/permissions/inventory.scanPutaway`).set(auth(owner.token));
     expect(revokeRes.status).toBe(200);
-    expect(revokeRes.body.canScanPutaway).toBe(false);
+    expect(revokeRes.body.permissions).not.toContain("inventory.scanPutaway");
 
     const putawayRes = await request(app).post("/api/stock/putaway").set(auth(sales.token)).send({ skuId, locationId, quantity: 1 });
     expect(putawayRes.status).toBe(403);
 
     const audit = await request(app).get("/api/reports/audit-log?entityType=User").set(auth(owner.token));
-    const revokeEntry = audit.body.find((a: any) => a.action === "REVOKE_SCAN_ACCESS" && a.entityId === sales.user.id);
+    const revokeEntry = audit.body.find((a: any) => a.action === "REVOKE_PERMISSION" && a.entityId === sales.user.id);
     expect(revokeEntry).toBeTruthy();
   });
 });

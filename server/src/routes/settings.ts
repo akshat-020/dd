@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireAnyPermission, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 
 // Singleton company settings — bank details shown on a Proforma Invoice
@@ -18,9 +18,9 @@ async function getOrCreateSettings() {
   return prisma.companySettings.create({ data: { id: "singleton" } });
 }
 
-// Owner/Accountant can read it (Accountant needs it to know what a PI will
-// show); only Owner can change it.
-settingsRouter.get("/", requireRole("OWNER", "ACCOUNTANT"), async (_req, res) => {
+// Whoever can configure settings, or create a PI (which displays these
+// bank details), can read them; only admin.configureSettings can change them.
+settingsRouter.get("/", requireAnyPermission("admin.configureSettings", "pricing.managePI"), async (_req, res) => {
   res.json(await getOrCreateSettings());
 });
 
@@ -41,7 +41,7 @@ const updateSchema = z.object({
   labelPrintFormat: z.enum(["SINGLE", "GRID"]).optional(),
 });
 
-settingsRouter.put("/", requireRole("OWNER"), async (req: AuthedRequest, res) => {
+settingsRouter.put("/", requirePermission("admin.configureSettings"), async (req: AuthedRequest, res) => {
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 

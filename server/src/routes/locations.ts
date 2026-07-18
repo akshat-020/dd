@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireRole, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateQrPngBuffer, generateQrSvg } from "../lib/qr.js";
 
@@ -58,7 +58,7 @@ const createLocationSchema = z.object({
   bin: z.string().optional(),
 });
 
-locationsRouter.post("/", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+locationsRouter.post("/", requirePermission("masterdata.editLocation"), async (req: AuthedRequest, res) => {
   const parsed = createLocationSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -77,7 +77,7 @@ const bulkImportSchema = z.object({
 
 // Bulk-load the spreadsheet of location codes produced during the physical
 // labeling walkthrough (see brief section 10, step 2).
-locationsRouter.post("/bulk-import", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+locationsRouter.post("/bulk-import", requirePermission("masterdata.editLocation"), async (req: AuthedRequest, res) => {
   const parsed = bulkImportSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -111,7 +111,7 @@ const updateLocationSchema = z.object({
   active: z.boolean().optional(),
 });
 
-locationsRouter.patch("/:id", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+locationsRouter.patch("/:id", requirePermission("masterdata.editLocation"), async (req: AuthedRequest, res) => {
   const parsed = updateLocationSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -132,7 +132,7 @@ locationsRouter.patch("/:id", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), a
 // either (those rows have a required foreign key to it) — the response
 // tells the caller to deactivate it instead (PATCH active:false), which
 // hides it from pickers/putaway without losing that history.
-locationsRouter.delete("/:id", requireRole("OWNER", "ACCOUNTANT", "WAREHOUSE"), async (req: AuthedRequest, res) => {
+locationsRouter.delete("/:id", requirePermission("masterdata.editLocation"), async (req: AuthedRequest, res) => {
   const location = await prisma.location.findUnique({ where: { id: req.params.id } });
   if (!location) return res.status(404).json({ error: "Location not found" });
 

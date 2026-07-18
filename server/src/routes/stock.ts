@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, requireScanAccess, requireInwardEntryAccess, type AuthedRequest } from "../middleware/auth.js";
-import { canUseScanActions, canLogInwardEntry } from "../lib/permissions.js";
+import { requireAuth, requireRole, requirePermission, type AuthedRequest } from "../middleware/auth.js";
+import { hasAnyPermission } from "../lib/permissions.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateQrPngBuffer, generateQrSvg, encodeSkuBatchLabel } from "../lib/qr.js";
@@ -30,7 +30,7 @@ const createBatchSchema = z.object({
 // below) — same physical-event/cost-event split as Order vs.
 // InvoiceReference on the sales side. Auto-generates a batch code if the
 // caller doesn't supply one.
-stockRouter.post("/batches", requireInwardEntryAccess, async (req: AuthedRequest, res) => {
+stockRouter.post("/batches", requirePermission("inventory.logInwardEntry"), async (req: AuthedRequest, res) => {
   const parsed = createBatchSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -61,8 +61,7 @@ stockRouter.post("/batches", requireInwardEntryAccess, async (req: AuthedRequest
 // something left to shelve are offered — see getShelvedQuantities for the
 // full inward -> putaway task lifecycle this is closing out.
 stockRouter.get("/batches/recent", async (req: AuthedRequest, res) => {
-  const { role, id: userId } = req.user!;
-  const allowed = role === "OWNER" || (await canUseScanActions(userId, role)) || (await canLogInwardEntry(userId, role));
+  const allowed = await hasAnyPermission(req.user!, ["inventory.scanPutaway", "inventory.logInwardEntry"]);
   if (!allowed) return res.status(403).json({ error: "Forbidden" });
 
   const batches = await prisma.skuBatch.findMany({
@@ -125,7 +124,7 @@ const createCostReferenceSchema = z.object({
   note: z.string().optional(),
 });
 
-stockRouter.post("/batches/:id/cost-references", requireRole("OWNER", "ACCOUNTANT"), async (req: AuthedRequest, res) => {
+stockRouter.post("/batches/:id/cost-references", requirePermission("pricing.logCostReference"), async (req: AuthedRequest, res) => {
   const parsed = createCostReferenceSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -147,7 +146,7 @@ stockRouter.post("/batches/:id/cost-references", requireRole("OWNER", "ACCOUNTAN
   res.status(201).json({ ...ref, unitCost: decryptNumber(ref.unitCost) });
 });
 
-stockRouter.get("/batches/:id/cost-references", requireRole("OWNER", "ACCOUNTANT"), async (req, res) => {
+stockRouter.get("/batches/:id/cost-references", requirePermission("pricing.viewCostPrice"), async (req, res) => {
   const refs = await prisma.purchaseCostReference.findMany({
     where: { batchId: req.params.id },
     orderBy: { createdAt: "desc" },
@@ -173,12 +172,12 @@ stockRouter.get("/batches/resolve/:label", async (req, res) => {
 
 // Batch breakdown for one SKU at one specific location — deliberately
 // scoped to a single (locationId, skuId) pair rather than general stock
-// browsing, so it's available to Warehouse (via requireScanAccess) for the
-// transfer flow: stock is tracked per batch, so moving "whatever's there"
-// isn't meaningful if more than one batch sits at that location — the
-// transfer endpoint always applies to one exact batchId (or explicitly no
-// batch), never "the total across batches."
-stockRouter.get("/at-location/:locationId/sku/:skuId", requireScanAccess, async (req, res) => {
+// browsing, so it's available to Warehouse (via inventory.transferStock)
+// for the transfer flow: stock is tracked per batch, so moving "whatever's
+// there" isn't meaningful if more than one batch sits at that location —
+// the transfer endpoint always applies to one exact batchId (or explicitly
+// no batch), never "the total across batches."
+stockRouter.get("/at-location/:locationId/sku/:skuId", requirePermission("inventory.transferStock"), async (req, res) => {
   const items = await prisma.stockItem.findMany({
     where: { locationId: req.params.locationId, skuId: req.params.skuId, quantity: { gt: 0 } },
     include: { batch: true },
@@ -193,7 +192,7 @@ stockRouter.get("/at-location/:locationId/sku/:skuId", requireScanAccess, async 
 // their visibility is task-scoped to whatever pick list/putaway they're
 // actively working (see /api/picking/* and the putaway flow), per the
 // permission model. Owner/Accountant/Sales keep full, non-task-scoped access.
-stockRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
+stockRouter.get("/", requirePermission("inventory.viewStockFull"), async (req, res) => {
   const { skuId, locationId } = req.query;
   const items = await prisma.stockItem.findMany({
     where: {
@@ -208,7 +207,7 @@ stockRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, re
 });
 
 // "Where is SKU X right now" — the direct fix for pain point #2.
-stockRouter.get("/sku/:skuId/locations", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
+stockRouter.get("/sku/:skuId/locations", requirePermission("inventory.viewStockFull"), async (req, res) => {
   const items = await prisma.stockItem.findMany({
     where: { skuId: req.params.skuId, quantity: { gt: 0 } },
     include: { location: true, batch: true },
@@ -222,7 +221,7 @@ stockRouter.get("/sku/:skuId/locations", requireRole("OWNER", "ACCOUNTANT", "SAL
 // Accountant can also reach). Owner + Sales only for now: a warehouse
 // staffer doing general floor work, or a sales supervisor answering "where's
 // X" for someone on the phone, without needing an assigned pick list first.
-stockRouter.get("/lookup/:skuId", requireRole("OWNER", "SALES"), async (req, res) => {
+stockRouter.get("/lookup/:skuId", requirePermission("inventory.viewStockFull"), async (req, res) => {
   const sku = await prisma.sku.findUnique({ where: { id: req.params.skuId } });
   if (!sku) return res.status(404).json({ error: "SKU not found" });
 
@@ -258,7 +257,7 @@ stockRouter.get("/lookup/:skuId", requireRole("OWNER", "SALES"), async (req, res
 // new order doesn't get told stock is free when it's really already
 // promised elsewhere (see /orders/:id/stock-check for the per-order-line
 // version once a draft exists).
-stockRouter.get("/summary", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {
+stockRouter.get("/summary", requirePermission("inventory.viewStockFull"), async (_req, res) => {
   const grouped = await prisma.stockItem.groupBy({ by: ["skuId"], _sum: { quantity: true } });
   const totals = new Map(grouped.map((g) => [g.skuId, g._sum.quantity ?? 0]));
   const skus = await prisma.sku.findMany({ where: { active: true }, select: { id: true } });
@@ -272,7 +271,7 @@ stockRouter.get("/summary", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (
   );
 });
 
-stockRouter.get("/low-stock", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (_req, res) => {
+stockRouter.get("/low-stock", requirePermission("inventory.viewStockFull"), async (_req, res) => {
   const skus = await prisma.sku.findMany({ where: { active: true }, include: { stockItems: true } });
   const lowStock = skus
     .map((sku) => ({
@@ -283,7 +282,7 @@ stockRouter.get("/low-stock", requireRole("OWNER", "ACCOUNTANT", "SALES"), async
   res.json(lowStock.map(({ sku, totalQty }) => ({ id: sku.id, code: sku.code, name: sku.name, reorderThreshold: sku.reorderThreshold, totalQty })));
 });
 
-stockRouter.get("/movements", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req, res) => {
+stockRouter.get("/movements", requirePermission("inventory.viewStockFull"), async (req, res) => {
   const { skuId, locationId, type, limit } = req.query;
   const movements = await prisma.stockMovement.findMany({
     where: {
@@ -322,7 +321,7 @@ const putawaySchema = z.object({
   reason: z.string().optional(),
 });
 
-stockRouter.post("/putaway", requireScanAccess, async (req: AuthedRequest, res) => {
+stockRouter.post("/putaway", requirePermission("inventory.scanPutaway"), async (req: AuthedRequest, res) => {
   const parsed = putawaySchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -375,7 +374,7 @@ const transferSchema = z.object({
   reason: z.string().optional(),
 });
 
-stockRouter.post("/transfer", requireScanAccess, async (req: AuthedRequest, res) => {
+stockRouter.post("/transfer", requirePermission("inventory.transferStock"), async (req: AuthedRequest, res) => {
   const parsed = transferSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });

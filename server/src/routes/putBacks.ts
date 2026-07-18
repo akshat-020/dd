@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireScanAccess, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { applyStockMovement } from "../lib/stock.js";
 
@@ -13,7 +13,7 @@ export const putBacksRouter = Router();
 
 putBacksRouter.use(requireAuth);
 
-putBacksRouter.get("/", requireScanAccess, async (_req, res) => {
+putBacksRouter.get("/", requirePermission("inventory.scanPutaway"), async (_req, res) => {
   const tasks = await prisma.putBackTask.findMany({
     where: { status: "PENDING" },
     include: {
@@ -34,7 +34,7 @@ const confirmSchema = z.object({
   locationId: z.string().min(1).optional(),
 });
 
-putBacksRouter.post("/:id/confirm", requireScanAccess, async (req: AuthedRequest, res) => {
+putBacksRouter.post("/:id/confirm", requirePermission("inventory.scanPutaway"), async (req: AuthedRequest, res) => {
   const parsed = confirmSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 

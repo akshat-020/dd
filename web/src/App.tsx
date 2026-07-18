@@ -56,7 +56,7 @@ export default function App() {
             <Route
               path="/orders/new"
               element={
-                <ProtectedRoute roles={["OWNER", "SALES"]}>
+                <ProtectedRoute permission="orders.createDraft">
                   <OrderNew />
                 </ProtectedRoute>
               }
@@ -72,7 +72,7 @@ export default function App() {
             <Route
               path="/picking"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
+                <ProtectedRoute permission="inventory.scanPutaway">
                   <Picking />
                 </ProtectedRoute>
               }
@@ -80,7 +80,7 @@ export default function App() {
             <Route
               path="/picking/:orderId"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
+                <ProtectedRoute permission="inventory.scanPutaway">
                   <PickingSession />
                 </ProtectedRoute>
               }
@@ -88,7 +88,7 @@ export default function App() {
             <Route
               path="/receiving"
               element={
-                <ProtectedRoute roles={["OWNER"]} allowScanAccess allowInwardEntryAccess>
+                <ProtectedRoute anyPermission={["inventory.scanPutaway", "inventory.logInwardEntry"]}>
                   <Receiving />
                 </ProtectedRoute>
               }
@@ -96,7 +96,7 @@ export default function App() {
             <Route
               path="/pricing"
               element={
-                <ProtectedRoute roles={["OWNER", "ACCOUNTANT"]}>
+                <ProtectedRoute anyPermission={["pricing.manageInvoiceReference", "pricing.managePI"]}>
                   <Pricing />
                 </ProtectedRoute>
               }
@@ -104,7 +104,7 @@ export default function App() {
             <Route
               path="/stock-lookup"
               element={
-                <ProtectedRoute roles={["OWNER", "SALES"]}>
+                <ProtectedRoute permission="inventory.viewStockFull">
                   <StockLookup />
                 </ProtectedRoute>
               }
@@ -112,7 +112,7 @@ export default function App() {
             <Route
               path="/stock-transfer"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
+                <ProtectedRoute permission="inventory.transferStock">
                   <StockTransfer />
                 </ProtectedRoute>
               }
@@ -120,7 +120,7 @@ export default function App() {
             <Route
               path="/put-backs"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess>
+                <ProtectedRoute permission="inventory.scanPutaway">
                   <PutBacks />
                 </ProtectedRoute>
               }
@@ -128,7 +128,7 @@ export default function App() {
             <Route
               path="/settings"
               element={
-                <ProtectedRoute roles={["OWNER"]}>
+                <ProtectedRoute permission="admin.configureSettings">
                   <SettingsPage />
                 </ProtectedRoute>
               }
@@ -138,7 +138,7 @@ export default function App() {
             <Route
               path="/my-tasks"
               element={
-                <ProtectedRoute roles={["OWNER", "WAREHOUSE"]} allowScanAccess allowInwardEntryAccess>
+                <ProtectedRoute anyPermission={["inventory.scanPutaway", "inventory.logInwardEntry"]}>
                   <MyTasks />
                 </ProtectedRoute>
               }

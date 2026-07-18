@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireRole, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
-import { PRICE_VISIBLE_ROLES } from "../lib/roles.js";
+import { hasPermission } from "../lib/permissions.js";
+import type { Role } from "../lib/roles.js";
 import { decryptNumber } from "../lib/crypto.js";
 import { getCommittedQuantities, reconcileOrderLineAllocation, ShortfallError } from "../lib/stock.js";
 import { resolveUnitFactor, toBaseQty, InvalidUnitError } from "../lib/units.js";
@@ -12,17 +13,18 @@ export const ordersRouter = Router();
 
 ordersRouter.use(requireAuth);
 
-function canSeePrice(role: string) {
-  return (PRICE_VISIBLE_ROLES as string[]).includes(role);
+function canSeePrice(user: { id: string; role: Role }) {
+  return hasPermission(user, "pricing.viewSalePrice");
 }
 
 // A DRAFT order is a not-yet-committed conversation with a buyer — visible
 // only to whoever created it (plus Owner, consistent with Owner's
 // unrestricted access everywhere else). Once finalized it's no longer a
 // private draft, so every other role's existing access resumes as before.
-function canAccessOrder(user: { id: string; role: string }, order: { status: string; createdById: string }) {
+async function canAccessOrder(user: { id: string; role: Role }, order: { status: string; createdById: string }) {
   if (order.status !== "DRAFT") return true;
-  return user.role === "OWNER" || order.createdById === user.id;
+  if (order.createdById === user.id) return true;
+  return hasPermission(user, "orders.viewAllDrafts");
 }
 
 // Role-safe one-line summary for an audit entry — never mentions price,
@@ -108,20 +110,23 @@ async function serializeOrder(orderId: string, includePrice: boolean) {
 // work. See the permission model addendum.
 ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const { status, search, from, to } = req.query;
-  const { id: userId, role } = req.user!;
+  const user = req.user!;
+  const { id: userId } = user;
 
   const statusFilter = typeof status === "string" && status ? status : undefined;
   const searchTerm = typeof search === "string" && search.trim() ? search.trim() : undefined;
   const fromDate = typeof from === "string" && from ? new Date(from) : undefined;
   const toDate = typeof to === "string" && to ? new Date(to) : undefined;
 
-  // Draft orders are scoped to their creator (+ Owner) at the query level,
-  // not filtered out afterward — see canAccessOrder above. AND-ing this in
-  // with every other filter (rather than branching on each combination)
-  // also naturally handles "explicitly filtering to DRAFT as a non-Owner"
-  // correctly: {status: DRAFT} AND ({status != DRAFT} OR {own}) reduces to
-  // {status: DRAFT, own} on its own.
-  const roleScope: Record<string, unknown> = role === "OWNER" ? {} : { OR: [{ status: { not: "DRAFT" } }, { createdById: userId }] };
+  // Draft orders are scoped to their creator (+ whoever can view all
+  // drafts) at the query level, not filtered out afterward — see
+  // canAccessOrder above. AND-ing this in with every other filter (rather
+  // than branching on each combination) also naturally handles "explicitly
+  // filtering to DRAFT without that permission" correctly: {status: DRAFT}
+  // AND ({status != DRAFT} OR {own}) reduces to {status: DRAFT, own} on
+  // its own.
+  const canViewAllDrafts = await hasPermission(user, "orders.viewAllDrafts");
+  const roleScope: Record<string, unknown> = canViewAllDrafts ? {} : { OR: [{ status: { not: "DRAFT" } }, { createdById: userId }] };
 
   const filters: Record<string, unknown>[] = [roleScope];
   if (statusFilter) filters.push({ status: statusFilter });
@@ -143,13 +148,15 @@ ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: A
     });
   }
 
-  // With no explicit filter at all, default to a view that stays usable as
-  // order volume grows: recent orders (last 3 days) plus anything still
-  // active regardless of age — an old order still awaiting dispatch
-  // shouldn't disappear just because it's older than the recency window.
-  // Everything else is one search/filter away, not hidden entirely.
+  // Default view (no explicit filter): recent orders (last 3 days) plus
+  // anything still active regardless of age — an old order still awaiting
+  // dispatch shouldn't disappear just because it's older than the recency
+  // window. Whoever lacks "view full order history" is held to this window
+  // as a hard ceiling even WITH an explicit filter — a search/date-range
+  // narrows within what's visible, it doesn't unlock reaching further back.
   const hasExplicitFilter = !!statusFilter || !!searchTerm || !!fromDate || !!toDate;
-  if (!hasExplicitFilter) {
+  const canViewFullHistory = await hasPermission(user, "orders.viewFullHistory");
+  if (!hasExplicitFilter || !canViewFullHistory) {
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     filters.push({ OR: [{ createdAt: { gte: threeDaysAgo } }, { status: { notIn: ["LOADED", "INVOICED", "CANCELLED"] } }] });
   }
@@ -159,7 +166,7 @@ ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: A
     include: { createdBy: { select: { id: true, name: true } }, lines: { include: { sku: true } } },
     orderBy: { createdAt: "desc" },
   });
-  const includePrice = canSeePrice(role);
+  const includePrice = await canSeePrice(user);
   const serialized = includePrice
     ? await Promise.all(orders.map((o) => serializeOrder(o.id, true)))
     : orders.map((o) => ({ ...o, lines: o.lines.map(({ ...l }) => l) }));
@@ -168,8 +175,8 @@ ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: A
 
 ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
-  if (!raw || !canAccessOrder(req.user!, raw)) return res.status(404).json({ error: "Order not found" });
-  const order = await serializeOrder(req.params.id, canSeePrice(req.user!.role));
+  if (!raw || !(await canAccessOrder(req.user!, raw))) return res.status(404).json({ error: "Order not found" });
+  const order = await serializeOrder(req.params.id, await canSeePrice(req.user!));
   res.json(order);
 });
 
@@ -183,7 +190,7 @@ ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req
 // Accountant additionally get the full before/after detail.
 ordersRouter.get("/:id/audit", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
-  if (!raw || !canAccessOrder(req.user!, raw)) return res.status(404).json({ error: "Order not found" });
+  if (!raw || !(await canAccessOrder(req.user!, raw))) return res.status(404).json({ error: "Order not found" });
 
   const orderId = req.params.id;
   const [pickItems, invoiceRefs, putBackTasks, proformaInvoices] = await Promise.all([
@@ -207,7 +214,7 @@ ordersRouter.get("/:id/audit", requireRole("OWNER", "ACCOUNTANT", "SALES"), asyn
     orderBy: { createdAt: "asc" },
   });
 
-  const showDetail = canSeePrice(req.user!.role);
+  const showDetail = await canSeePrice(req.user!);
   res.json(
     entries.map((e) => ({
       id: e.id,
@@ -236,7 +243,7 @@ const createOrderSchema = z.object({
   lines: z.array(orderLineInput).min(1),
 });
 
-ordersRouter.post("/", requireRole("OWNER", "SALES"), async (req: AuthedRequest, res) => {
+ordersRouter.post("/", requirePermission("orders.createDraft"), async (req: AuthedRequest, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -290,7 +297,7 @@ ordersRouter.post("/", requireRole("OWNER", "SALES"), async (req: AuthedRequest,
 ordersRouter.get("/:id/stock-check", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: { include: { sku: true } } } });
   if (!order) return res.status(404).json({ error: "Order not found" });
-  if (!canAccessOrder(req.user!, order)) return res.status(404).json({ error: "Order not found" });
+  if (!(await canAccessOrder(req.user!, order))) return res.status(404).json({ error: "Order not found" });
 
   const skuIds = order.lines.map((l) => l.skuId);
   const [stockAgg, committed] = await Promise.all([
@@ -357,13 +364,13 @@ const updateLinesSchema = z.object({
 // a reduction below what's picked, the resulting put-back task) goes
 // stale; once an order is actually INVOICED it's locked, so the Invoice
 // Reference layer can never see a post-invoice edit in the first place.
-ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequest, res) => {
+ordersRouter.patch("/:id", requirePermission("orders.editFinalized"), async (req: AuthedRequest, res) => {
   const parsed = updateLinesSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
   }
   const before = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
-  if (!before || !canAccessOrder(req.user!, before)) return res.status(404).json({ error: "Order not found" });
+  if (!before || !(await canAccessOrder(req.user!, before))) return res.status(404).json({ error: "Order not found" });
   if (before.status !== "DRAFT" && before.status !== "FINALIZED" && before.status !== "LOADED") {
     return res.status(409).json({ error: "Only draft, finalized, or loaded (not yet invoiced) orders can be edited" });
   }
@@ -440,7 +447,7 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
     throw err;
   }
 
-  const after = await serializeOrder(before.id, canSeePrice(req.user!.role));
+  const after = await serializeOrder(before.id, await canSeePrice(req.user!));
   await recordAudit({ userId: req.user!.id, action: "UPDATE", entityType: "Order", entityId: before.id, before, after });
   res.json(after);
 });
@@ -448,9 +455,9 @@ ordersRouter.patch("/:id", requireRole("OWNER", "SALES"), async (req: AuthedRequ
 // Finalize: locks in quantities, then allocates each line to specific stock
 // locations (largest bin first, to minimize pick stops) and generates a
 // pick list grouped/sequenced by location for the loading team.
-ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: AuthedRequest, res) => {
+ordersRouter.post("/:id/finalize", requirePermission("orders.createDraft"), async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
-  if (!order || !canAccessOrder(req.user!, order)) return res.status(404).json({ error: "Order not found" });
+  if (!order || !(await canAccessOrder(req.user!, order))) return res.status(404).json({ error: "Order not found" });
   if (order.status !== "DRAFT") {
     return res.status(409).json({ error: "Only draft orders can be finalized" });
   }
@@ -542,7 +549,7 @@ ordersRouter.post("/:id/finalize", requireRole("OWNER", "SALES"), async (req: Au
   }
 
   await recordAudit({ userId: req.user!.id, action: "FINALIZE", entityType: "Order", entityId: order.id, after: { status: "FINALIZED" } });
-  const after = await serializeOrder(order.id, canSeePrice(req.user!.role));
+  const after = await serializeOrder(order.id, await canSeePrice(req.user!));
   res.json(after);
 });
 

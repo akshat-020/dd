@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireRole, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { decryptNumber } from "../lib/crypto.js";
 import { verifyAuditChain } from "../lib/audit.js";
 import { compoundBreakdown } from "../lib/units.js";
@@ -106,7 +106,7 @@ reportsRouter.get("/fulfillment-turnaround", async (_req, res) => {
 });
 
 // Sales by SKU/buyer/period — includes priced value, so Owner/Accountant only.
-reportsRouter.get("/sales", requireRole("OWNER", "ACCOUNTANT"), async (req, res) => {
+reportsRouter.get("/sales", requirePermission("pricing.viewSalePrice"), async (req, res) => {
   const { from, to } = req.query;
   const lines = await prisma.invoiceReferenceLine.findMany({
     where: {
@@ -141,7 +141,7 @@ reportsRouter.get("/sales", requireRole("OWNER", "ACCOUNTANT"), async (req, res)
 // Discrepancy/audit log: every stock movement, price entry, order edit with
 // who/when/what. Restricted to Owner (and Accountant, since they need to
 // trace price/invoice discrepancies too).
-reportsRouter.get("/audit-log", requireRole("OWNER", "ACCOUNTANT"), async (req: AuthedRequest, res) => {
+reportsRouter.get("/audit-log", requirePermission("admin.viewAuditLog"), async (req: AuthedRequest, res) => {
   const { entityType, limit } = req.query;
   const logs = await prisma.auditLog.findMany({
     where: { entityType: typeof entityType === "string" ? entityType : undefined },

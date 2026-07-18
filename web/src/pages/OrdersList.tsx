@@ -13,7 +13,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 export default function OrdersList() {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [search, setSearch] = useState("");
@@ -47,7 +47,7 @@ export default function OrdersList() {
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">Orders</h1>
-        {hasRole("OWNER", "SALES") && (
+        {hasPermission("orders.createDraft") && (
           <Link to="/orders/new" className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900">
             + New Order
           </Link>

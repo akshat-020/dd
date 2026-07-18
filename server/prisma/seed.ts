@@ -1,6 +1,7 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
+import { applyRoleTemplate } from "../src/lib/permissions.js";
 
 const prisma = new PrismaClient();
 
@@ -28,6 +29,17 @@ async function main() {
       update: {},
       create: { name: "Warehouse Staff", email: "warehouse@example.com", passwordHash: password, role: "WAREHOUSE" },
     }),
+  ]);
+
+  // Role is only ever a starting template — apply each seeded account's
+  // default permission set the same way a real account creation would
+  // (see routes/users.ts). Owner bypasses the permission table entirely,
+  // so it's skipped here. `createMany({ skipDuplicates: true })` inside
+  // applyRoleTemplate makes this safe to re-run on every `npm run seed`.
+  await Promise.all([
+    applyRoleTemplate(accountant.id, "ACCOUNTANT", owner.id),
+    applyRoleTemplate(sales.id, "SALES", owner.id),
+    applyRoleTemplate(warehouse.id, "WAREHOUSE", owner.id),
   ]);
 
   const locations = await Promise.all(

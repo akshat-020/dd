@@ -8,9 +8,15 @@ import { availableUnits, compoundBreakdown } from "../lib/units";
 
 export default function OrderDetail() {
   const { id } = useParams<{ id: string }>();
-  const { hasRole } = useAuth();
-  const canEdit = hasRole("OWNER", "SALES");
-  const canSeePrice = hasRole("OWNER", "ACCOUNTANT");
+  const { hasRole, hasPermission, hasAnyPermission } = useAuth();
+  // Single permission gates the whole PATCH /orders/:id endpoint regardless
+  // of order status (draft header, lines, Final Qty adjustments post-pick
+  // all go through it) — "Finalize" is its own separate action/permission
+  // (POST /orders/:id/finalize), since composing a new order and adjusting
+  // an existing one are different workflows that can be granted apart.
+  const canEdit = hasPermission("orders.editFinalized");
+  const canFinalize = hasPermission("orders.createDraft");
+  const canSeePrice = hasPermission("pricing.viewSalePrice");
 
   const [order, setOrder] = useState<Order | null>(null);
   const [skus, setSkus] = useState<Sku[]>([]);
@@ -50,7 +56,7 @@ export default function OrderDetail() {
         const pl = await api.get<PickListItem[]>(`/picking/orders/${id}`);
         setPickList(pl);
       }
-      if (canSeePrice) {
+      if (hasPermission("pricing.managePI")) {
         api
           .get<ProformaInvoice[]>(`/proforma-invoices/order/${id}`)
           .then(setProformaInvoices)
@@ -66,7 +72,7 @@ export default function OrderDetail() {
       .get<OrderAuditEntry[]>(`/orders/${id}/audit`)
       .then(setAuditEntries)
       .catch(() => {});
-  }, [id, canSeePrice]);
+  }, [id, canSeePrice, hasPermission]);
 
   useEffect(() => {
     load();
@@ -411,7 +417,7 @@ export default function OrderDetail() {
         </div>
       )}
 
-      {isDraft && canEdit && (
+      {isDraft && canFinalize && (
         <button onClick={handleFinalize} disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-3 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
           {busy ? "Finalizing…" : "Finalize order & generate pick list"}
         </button>
@@ -438,7 +444,7 @@ export default function OrderDetail() {
               </li>
             ))}
           </ul>
-          {hasRole("OWNER", "WAREHOUSE") && (
+          {hasPermission("inventory.scanPutaway") && (
             <Link to={`/picking/${id}`} className="mt-2 inline-block text-sm font-medium text-slate-600 underline dark:text-slate-300">
               Go to picking screen →
             </Link>
@@ -446,7 +452,7 @@ export default function OrderDetail() {
         </section>
       )}
 
-      {canSeePrice && !isDraft && (
+      {hasAnyPermission("pricing.manageInvoiceReference", "pricing.managePI") && !isDraft && (
         <Link
           to={`/pricing?order=${id}`}
           className="block w-full rounded-lg border border-slate-300 px-4 py-3 text-center font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300"
@@ -455,7 +461,7 @@ export default function OrderDetail() {
         </Link>
       )}
 
-      {canSeePrice && !isDraft && (
+      {hasPermission("pricing.managePI") && !isDraft && (
         <ProformaInvoiceSection
           proformaInvoices={proformaInvoices}
           busy={piBusy}

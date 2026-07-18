@@ -7,9 +7,11 @@ import { LabelPrintPanel } from "../components/LabelPrintPanel";
 import { BulkSkuImport } from "../components/BulkSkuImport";
 
 export default function SkusPage() {
-  const { hasRole } = useAuth();
-  const canEdit = hasRole("OWNER", "ACCOUNTANT", "WAREHOUSE");
-  const canSeeStock = hasRole("OWNER", "ACCOUNTANT", "SALES");
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission("masterdata.editSku");
+  const canBulkImport = hasPermission("masterdata.bulkImportSku");
+  const canSeeStock = hasPermission("inventory.viewStockFull");
+  const canSetDefaultPrice = hasPermission("pricing.setDefaultPrice");
   const [skus, setSkus] = useState<Sku[]>([]);
   const [stockBySku, setStockBySku] = useState<Map<string, number>>(new Map());
   const [search, setSearch] = useState("");
@@ -17,7 +19,18 @@ export default function SkusPage() {
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
-  const [form, setForm] = useState({ code: "", name: "", unit: "", category: "", reorderThreshold: "0", altUnitName: "", altUnitFactor: "" });
+  const emptyForm = {
+    code: "",
+    name: "",
+    unit: "",
+    category: "",
+    reorderThreshold: "0",
+    altUnitName: "",
+    altUnitFactor: "",
+    defaultPrice: "",
+    defaultAltUnitPrice: "",
+  };
+  const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
 
   function load() {
@@ -54,8 +67,10 @@ export default function SkusPage() {
         reorderThreshold: Number(form.reorderThreshold) || 0,
         altUnitName: form.altUnitName || undefined,
         altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
+        defaultPrice: form.defaultPrice ? Number(form.defaultPrice) : undefined,
+        defaultAltUnitPrice: form.defaultAltUnitPrice ? Number(form.defaultAltUnitPrice) : undefined,
       });
-      setForm({ code: "", name: "", unit: "", category: "", reorderThreshold: "0", altUnitName: "", altUnitFactor: "" });
+      setForm(emptyForm);
       setShowForm(false);
       load();
     } catch (err) {
@@ -69,26 +84,30 @@ export default function SkusPage() {
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-50">SKU Master</h1>
-        {canEdit && (
+        {(canEdit || canBulkImport) && (
           <div className="flex gap-2">
-            <button
-              onClick={() => {
-                setShowBulkImport((v) => !v);
-                setShowForm(false);
-              }}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300"
-            >
-              {showBulkImport ? "Cancel" : "Bulk add / update"}
-            </button>
-            <button
-              onClick={() => {
-                setShowForm((v) => !v);
-                setShowBulkImport(false);
-              }}
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
-            >
-              {showForm ? "Cancel" : "+ Add SKU"}
-            </button>
+            {canBulkImport && (
+              <button
+                onClick={() => {
+                  setShowBulkImport((v) => !v);
+                  setShowForm(false);
+                }}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300"
+              >
+                {showBulkImport ? "Cancel" : "Bulk add / update"}
+              </button>
+            )}
+            {canEdit && (
+              <button
+                onClick={() => {
+                  setShowForm((v) => !v);
+                  setShowBulkImport(false);
+                }}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
+              >
+                {showForm ? "Cancel" : "+ Add SKU"}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -132,6 +151,30 @@ export default function SkusPage() {
               />
             </div>
           </div>
+          {canSetDefaultPrice && (
+            <div>
+              <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                Default price / MRP (optional) — prefills wherever this SKU's price is entered; always overridable per order,
+                never retroactive to prices already set.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field
+                  label={`Price per ${form.unit || "base unit"}`}
+                  type="number"
+                  value={form.defaultPrice}
+                  onChange={(v) => setForm({ ...form, defaultPrice: v })}
+                />
+                {form.altUnitName && (
+                  <Field
+                    label={`Price per ${form.altUnitName}`}
+                    type="number"
+                    value={form.defaultAltUnitPrice}
+                    onChange={(v) => setForm({ ...form, defaultAltUnitPrice: v })}
+                  />
+                )}
+              </div>
+            </div>
+          )}
           <button type="submit" disabled={submitting} className="w-full rounded-lg bg-slate-900 px-4 py-3 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
             {submitting ? "Saving…" : "Save SKU"}
           </button>
@@ -226,6 +269,8 @@ function SkuRow({
 }
 
 function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
+  const { hasPermission } = useAuth();
+  const canSetDefaultPrice = hasPermission("pricing.setDefaultPrice");
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     name: sku.name,
@@ -234,6 +279,8 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
     reorderThreshold: String(sku.reorderThreshold),
     altUnitName: sku.altUnitName ?? "",
     altUnitFactor: sku.altUnitFactor != null ? String(sku.altUnitFactor) : "",
+    defaultPrice: sku.defaultPrice != null ? String(sku.defaultPrice) : "",
+    defaultAltUnitPrice: sku.defaultAltUnitPrice != null ? String(sku.defaultAltUnitPrice) : "",
   });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -243,6 +290,26 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
   // the addendum: the change only applies going forward, never retroactive).
   const [factorWarning, setFactorWarning] = useState<string | null>(null);
 
+  function buildPayload() {
+    return {
+      name: form.name,
+      unit: form.unit,
+      category: form.category || undefined,
+      reorderThreshold: Number(form.reorderThreshold) || 0,
+      altUnitName: form.altUnitName || undefined,
+      altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
+      // Omitted entirely (not even as undefined-turned-null) when the field
+      // isn't rendered at all for this viewer — nothing to send if they
+      // can't set it, and the server would silently drop it anyway.
+      ...(canSetDefaultPrice
+        ? {
+            defaultPrice: form.defaultPrice ? Number(form.defaultPrice) : undefined,
+            defaultAltUnitPrice: form.defaultAltUnitPrice ? Number(form.defaultAltUnitPrice) : undefined,
+          }
+        : {}),
+    };
+  }
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -250,14 +317,7 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
     setError(null);
     setFactorWarning(null);
     try {
-      await api.patch(`/skus/${sku.id}`, {
-        name: form.name,
-        unit: form.unit,
-        category: form.category || undefined,
-        reorderThreshold: Number(form.reorderThreshold) || 0,
-        altUnitName: form.altUnitName || undefined,
-        altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
-      });
+      await api.patch(`/skus/${sku.id}`, buildPayload());
       setEditing(false);
       onSaved();
     } catch (err) {
@@ -276,12 +336,7 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
     setError(null);
     try {
       await api.patch(`/skus/${sku.id}`, {
-        name: form.name,
-        unit: form.unit,
-        category: form.category || undefined,
-        reorderThreshold: Number(form.reorderThreshold) || 0,
-        altUnitName: form.altUnitName || undefined,
-        altUnitFactor: form.altUnitFactor ? Number(form.altUnitFactor) : undefined,
+        ...buildPayload(),
         confirmFactorChange: true,
       });
       setFactorWarning(null);
@@ -334,6 +389,30 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
           />
         </div>
       </div>
+      {canSetDefaultPrice && (
+        <div>
+          <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+            Default price / MRP (optional) — prefills wherever this SKU's price is entered; changing it never affects prices
+            already set on existing orders/PIs/invoices.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <Field
+              label={`Price per ${form.unit || "base unit"}`}
+              type="number"
+              value={form.defaultPrice}
+              onChange={(v) => setForm({ ...form, defaultPrice: v })}
+            />
+            {form.altUnitName && (
+              <Field
+                label={`Price per ${form.altUnitName}`}
+                type="number"
+                value={form.defaultAltUnitPrice}
+                onChange={(v) => setForm({ ...form, defaultAltUnitPrice: v })}
+              />
+            )}
+          </div>
+        </div>
+      )}
       {factorWarning && (
         <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
           <p>{factorWarning}</p>
@@ -374,8 +453,8 @@ function SkuEditForm({ sku, onSaved }: { sku: Sku; onSaved: () => void }) {
 }
 
 function BatchHistory({ skuId, skuCode }: { skuId: string; skuCode: string }) {
-  const { hasRole } = useAuth();
-  const canSeeCost = hasRole("OWNER", "ACCOUNTANT");
+  const { hasPermission } = useAuth();
+  const canSeeCost = hasPermission("pricing.viewCostPrice");
   const [batches, setBatches] = useState<SkuBatch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -433,6 +512,8 @@ function BatchCard({ batch, canSeeCost }: { batch: SkuBatch; canSeeCost: boolean
 }
 
 function CostReferencePanel({ batchId }: { batchId: string }) {
+  const { hasPermission } = useAuth();
+  const canLogCost = hasPermission("pricing.logCostReference");
   const [refs, setRefs] = useState<PurchaseCostReference[] | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ quantity: "", unitCost: "", supplierRef: "", note: "" });
@@ -480,9 +561,11 @@ function CostReferencePanel({ batchId }: { batchId: string }) {
       ))}
       {refs?.length === 0 && !showForm && <p className="text-xs text-slate-400">No cost recorded yet.</p>}
       {!showForm ? (
-        <button onClick={() => setShowForm(true)} className="text-xs font-medium text-slate-500 underline dark:text-slate-400">
-          + Add cost
-        </button>
+        canLogCost && (
+          <button onClick={() => setShowForm(true)} className="text-xs font-medium text-slate-500 underline dark:text-slate-400">
+            + Add cost
+          </button>
+        )
       ) : (
         <form onSubmit={handleAdd} className="space-y-1">
           <input

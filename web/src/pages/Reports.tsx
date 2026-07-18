@@ -42,8 +42,9 @@ interface SalesRow {
 type Tab = "stock" | "turnaround" | "sales" | "audit";
 
 export default function Reports() {
-  const { hasRole } = useAuth();
-  const canSeeMoney = hasRole("OWNER", "ACCOUNTANT");
+  const { hasRole, hasPermission } = useAuth();
+  const canSeeSales = hasPermission("pricing.viewSalePrice");
+  const canSeeAuditLog = hasPermission("admin.viewAuditLog");
   // Stock-on-hand is general inventory browsing, excluded from Warehouse's
   // task-scoped visibility (same restriction as the Stock/Locations pages).
   const canSeeStock = hasRole("OWNER", "ACCOUNTANT", "SALES");
@@ -57,14 +58,15 @@ export default function Reports() {
   useEffect(() => {
     if (tab === "stock" && canSeeStock) api.get<StockOnHandRow[]>("/reports/stock-on-hand").then(setStock).catch(() => {});
     if (tab === "turnaround") api.get<TurnaroundRow[]>("/reports/fulfillment-turnaround").then(setTurnaround).catch(() => {});
-    if (tab === "sales" && canSeeMoney) api.get<SalesRow[]>("/reports/sales").then(setSales).catch(() => {});
-    if (tab === "audit" && canSeeMoney) api.get<AuditLogEntry[]>("/reports/audit-log").then(setAudit).catch(() => {});
-  }, [tab, canSeeMoney, canSeeStock]);
+    if (tab === "sales" && canSeeSales) api.get<SalesRow[]>("/reports/sales").then(setSales).catch(() => {});
+    if (tab === "audit" && canSeeAuditLog) api.get<AuditLogEntry[]>("/reports/audit-log").then(setAudit).catch(() => {});
+  }, [tab, canSeeSales, canSeeAuditLog, canSeeStock]);
 
   const tabs: { key: Tab; label: string }[] = [
     ...(canSeeStock ? [{ key: "stock" as Tab, label: "Stock on hand" }] : []),
     { key: "turnaround", label: "Turnaround" },
-    ...(canSeeMoney ? [{ key: "sales" as Tab, label: "Sales" }, { key: "audit" as Tab, label: "Audit log" }] : []),
+    ...(canSeeSales ? [{ key: "sales" as Tab, label: "Sales" }] : []),
+    ...(canSeeAuditLog ? [{ key: "audit" as Tab, label: "Audit log" }] : []),
   ];
 
   return (
@@ -99,7 +101,7 @@ export default function Reports() {
         />
       )}
 
-      {tab === "sales" && canSeeMoney && (
+      {tab === "sales" && canSeeSales && (
         <Table
           rows={sales}
           columns={[
@@ -113,7 +115,7 @@ export default function Reports() {
         />
       )}
 
-      {tab === "audit" && canSeeMoney && (
+      {tab === "audit" && canSeeAuditLog && (
         <ul className="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
           {audit.map((a) => (
             <li key={a.id} className="px-4 py-2 text-sm">

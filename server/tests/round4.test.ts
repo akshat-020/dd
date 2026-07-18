@@ -29,7 +29,7 @@ afterAll(async () => {
 });
 
 describe("#4 standalone SKU -> location lookup, usable without an active pick task", () => {
-  it("Owner and Sales can look up a SKU's current locations and quantity; Accountant and Warehouse cannot", async () => {
+  it("Owner, Sales, and Accountant (all have inventory.viewStockFull) can look up a SKU's current locations and quantity; Warehouse (task-scoped only) cannot", async () => {
     const sku = await prisma.sku.create({ data: { code: "R4-SKU-1", name: "Round4 Widget", unit: "pc" } });
     const locA = await prisma.location.create({ data: { code: "R4-LOC-1A", zone: "R4", rack: "01" } });
     const locB = await prisma.location.create({ data: { code: "R4-LOC-1B", zone: "R4", rack: "01" } });
@@ -47,7 +47,8 @@ describe("#4 standalone SKU -> location lookup, usable without an active pick ta
     expect(salesRes.body.totalQty).toBe(65);
 
     const accountantRes = await request(app).get(`/api/stock/lookup/${sku.id}`).set(auth(accountant.token));
-    expect(accountantRes.status).toBe(403);
+    expect(accountantRes.status).toBe(200);
+    expect(accountantRes.body.totalQty).toBe(65);
 
     const warehouseRes = await request(app).get(`/api/stock/lookup/${sku.id}`).set(auth(warehouse.token));
     expect(warehouseRes.status).toBe(403);

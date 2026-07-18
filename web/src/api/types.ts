@@ -1,3 +1,5 @@
+import type { PermissionKey } from "../lib/permissions";
+
 export type Role = "OWNER" | "ACCOUNTANT" | "SALES" | "WAREHOUSE";
 
 export interface User {
@@ -6,13 +8,13 @@ export interface User {
   email: string;
   role: Role;
   active?: boolean;
-  // Composable add-on permission, only meaningful for SALES accounts —
-  // Owner/Warehouse always have scan access regardless of this flag.
-  canScanPutaway?: boolean;
-  // Composable permission, only meaningful for SALES accounts — defaults to
-  // true for them server-side. Owner always has it; Accountant/Warehouse
-  // never do regardless of this flag.
-  canLogInwardEntry?: boolean;
+  createdAt?: string;
+  // Every permission this account currently holds — Owner accounts get the
+  // full catalogue back (Owner bypasses the underlying grant table
+  // entirely), everyone else gets exactly what's been individually granted,
+  // starting from whatever their role's template applied at creation. See
+  // lib/permissions.ts for the catalogue and useAuth().hasPermission.
+  permissions: PermissionKey[];
   totpEnabled?: boolean;
 }
 
@@ -37,6 +39,12 @@ export interface Sku {
   // this SKU only ever has one unit.
   altUnitName?: string | null;
   altUnitFactor?: number | null;
+  // Default Price (MRP) — a prefill convenience, never a locked value (see
+  // pricing.setDefaultPrice / pricing.viewSalePrice). Field-level protected
+  // server-side: absent entirely from the response for a viewer without
+  // one of those two permissions, not just null.
+  defaultPrice?: number | null;
+  defaultAltUnitPrice?: number | null;
 }
 
 export interface CompoundBreakdown {

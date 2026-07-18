@@ -14,6 +14,9 @@ interface PricingLine {
   unit: string | null;
   unitQty: number | null;
   unitPrice: number | null;
+  // The SKU's Default Price (MRP) for this same unit — a prefill hint only,
+  // never applied automatically. Null if the SKU has none set for this unit.
+  defaultUnitPrice: number | null;
 }
 
 export default function Pricing() {
@@ -41,7 +44,17 @@ export default function Pricing() {
     try {
       const res = await api.get<{ lines: PricingLine[] }>(`/orders/${orderId}/pricing`);
       setLines(res.lines);
-      setPrices(Object.fromEntries(res.lines.map((l) => [l.lineId, l.unitPrice != null ? String(l.unitPrice) : ""])));
+      // Prefill from the SKU's Default Price when nothing's been explicitly
+      // set yet — still just a starting point, freely overridable, and
+      // "Save pricing" is what actually commits whatever's shown.
+      setPrices(
+        Object.fromEntries(
+          res.lines.map((l) => {
+            const prefill = l.unitPrice ?? l.defaultUnitPrice;
+            return [l.lineId, prefill != null ? String(prefill) : ""];
+          })
+        )
+      );
       const refs = await api.get<InvoiceReference[]>(`/invoice-references/order/${orderId}`);
       setInvoiceRefs(refs);
     } catch (err) {
@@ -188,6 +201,11 @@ export default function Pricing() {
                       onChange={(e) => setPrices({ ...prices, [l.lineId]: e.target.value })}
                       className="w-28 rounded border border-slate-300 px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
                     />
+                    {l.unitPrice == null && l.defaultUnitPrice != null && (
+                      <span className="ml-1 text-xs text-slate-400" title="Prefilled from this SKU's Default Price (MRP) — not yet saved">
+                        (default)
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

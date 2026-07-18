@@ -5,7 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import type { LowStockSku, Order, Shortfall } from "../api/types";
 
 export default function Dashboard() {
-  const { user, hasRole } = useAuth();
+  const { user, hasRole, hasPermission } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [lowStock, setLowStock] = useState<LowStockSku[]>([]);
   const [shortfalls, setShortfalls] = useState<Shortfall[]>([]);
@@ -16,7 +16,7 @@ export default function Dashboard() {
   // these calls fire for them — they get a task-focused dashboard instead
   // (below), not a 403 from calls they were never meant to make.
   const canSeeOrders = hasRole("OWNER", "ACCOUNTANT", "SALES");
-  const canSeeLowStock = hasRole("OWNER", "ACCOUNTANT", "SALES");
+  const canSeeLowStock = hasPermission("inventory.viewStockFull");
   const canSeeShortfalls = hasRole("OWNER", "SALES");
 
   useEffect(() => {

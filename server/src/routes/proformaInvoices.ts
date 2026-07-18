@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import PDFDocument from "pdfkit";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 
@@ -15,7 +15,7 @@ import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 // document in the system.
 export const proformaInvoicesRouter = Router();
 
-proformaInvoicesRouter.use(requireAuth, requireRole("OWNER", "ACCOUNTANT"));
+proformaInvoicesRouter.use(requireAuth, requirePermission("pricing.managePI"));
 
 function serializeLine<T extends { unitPrice: string }>(line: T) {
   return { ...line, unitPrice: decryptNumber(line.unitPrice) };

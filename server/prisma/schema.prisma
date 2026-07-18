@@ -24,23 +24,6 @@ model User {
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
-  // Composable add-on permission: lets a Sales-staff account also perform
-  // scan-based putaway/pick actions without becoming a Warehouse role (and
-  // without inheriting Warehouse's task-scoped visibility restriction).
-  // Meaningless for other roles — Owner/Warehouse always have scan access,
-  // Accountant never does, regardless of this flag. Grantable by Owner only.
-  canScanPutaway Boolean @default(false)
-
-  // Composable permission: lets a Sales-staff account log inward stock
-  // entries (SKU + qty + supplier ref + date, triggers label printing).
-  // Defaults to true for Sales (it's part of their normal baseline, not an
-  // opt-in add-on like canScanPutaway) but stays a per-user override so an
-  // Owner can revoke it for a specific person. Meaningless for other
-  // roles — Owner always has it, Accountant/Warehouse never do, regardless
-  // of this flag. The cost/price side of a purchase (PurchaseCostReference)
-  // is a separate, Owner+Accountant-only action — never gated by this flag.
-  canLogInwardEntry Boolean @default(true)
-
   // Optional TOTP-based 2FA. Recommended (not forced) for Owner/Accountant
   // since those roles reach pricing/cost data — a compromised password
   // alone shouldn't be enough. totpSecret is only set once enrollment is
@@ -58,6 +41,31 @@ model User {
   sessions                Session[]
   putBacksConfirmed       PutBackTask[]
   proformaInvoicesCreated ProformaInvoice[]
+  permissions             UserPermission[]        @relation("PermissionHolder")
+  permissionsGranted      UserPermission[]        @relation("PermissionGrantedBy")
+}
+
+// The access-control model: every permission is an individual, toggleable
+// capability per person (see lib/permissions.ts for the fixed catalogue of
+// valid `permission` keys and each role's default template). A role is only
+// ever a starting template applied at account-creation time — this table is
+// the actual source of truth for what an account can do afterward. Presence
+// of a row is the grant; there's no separate boolean, so revoking is a
+// delete (deny-by-default: no row means no access, including for a
+// permission key introduced after this account was created). Owner bypasses
+// this table entirely and always has every permission — see
+// lib/permissions.ts's hasPermission — so Owner accounts intentionally never
+// get rows written here.
+model UserPermission {
+  id          String   @id @default(cuid())
+  user        User     @relation("PermissionHolder", fields: [userId], references: [id])
+  userId      String
+  permission  String
+  grantedBy   User     @relation("PermissionGrantedBy", fields: [grantedById], references: [id])
+  grantedById String
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, permission])
 }
 
 // Server-side session record backing each JWT (the token embeds this row's
@@ -94,6 +102,20 @@ model Sku {
   // when they were entered, so a later change never reinterprets history.
   altUnitName   String?
   altUnitFactor Int?
+
+  // Default Price (MRP) — a prefill convenience, not a locked value. Two
+  // independent fields since Box/Pcs (or any base/alt unit pair) are priced
+  // independently elsewhere in the system (see OrderLinePrice/pricing.ts);
+  // a SKU with no alt unit only ever uses defaultPrice. Both encrypted at
+  // rest like every other price field (see lib/crypto.ts). Field-level
+  // protected independently of the rest of the SKU record — see the
+  // pricing.viewSalePrice / pricing.setDefaultPrice checks in routes/skus.ts,
+  // which strip these two fields from the API response entirely (not just
+  // hide them client-side) for a viewer without one of those permissions.
+  // Changing either later is non-retroactive: it only prefills new lines
+  // created after the change, same principle as altUnitFactor above.
+  defaultPrice        String?
+  defaultAltUnitPrice String?
 
   batches              SkuBatch[]
   stockItems           StockItem[]

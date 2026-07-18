@@ -1,16 +1,18 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import type { Role } from "../api/types";
+import type { PermissionKey } from "../lib/permissions";
 
 interface NavItem {
   to: string;
   label: string;
+  // For the handful of things that stay structurally role-based (account
+  // management) or general, uncatalogued viewing access.
   roles?: Role[];
-  // Also visible to a Sales account with the granted scan permission, even
-  // though "SALES" isn't in `roles`.
-  scanGated?: boolean;
-  // Same idea for the inward-entry permission.
-  inwardGated?: boolean;
+  // Visible to anyone holding this permission, regardless of role.
+  permission?: PermissionKey;
+  // Visible to anyone holding any one of these permissions.
+  anyPermission?: PermissionKey[];
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -18,31 +20,31 @@ const NAV_ITEMS: NavItem[] = [
   // General order browsing/editing is excluded from Warehouse's task-scoped
   // visibility — their view is Picking + Receiving + My Tasks below.
   { to: "/orders", label: "Orders", roles: ["OWNER", "ACCOUNTANT", "SALES"] },
-  { to: "/orders/new", label: "New Order", roles: ["OWNER", "SALES"] },
-  { to: "/picking", label: "Picking", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
-  { to: "/receiving", label: "Receiving", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
-  { to: "/stock-transfer", label: "Transfer Stock", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
-  { to: "/put-backs", label: "Put-backs", roles: ["OWNER", "WAREHOUSE"], scanGated: true },
-  { to: "/my-tasks", label: "My Tasks", roles: ["OWNER", "WAREHOUSE"], scanGated: true, inwardGated: true },
+  { to: "/orders/new", label: "New Order", permission: "orders.createDraft" },
+  { to: "/picking", label: "Picking", permission: "inventory.scanPutaway" },
+  { to: "/receiving", label: "Receiving", anyPermission: ["inventory.scanPutaway", "inventory.logInwardEntry"] },
+  { to: "/stock-transfer", label: "Transfer Stock", permission: "inventory.transferStock" },
+  { to: "/put-backs", label: "Put-backs", permission: "inventory.scanPutaway" },
+  { to: "/my-tasks", label: "My Tasks", anyPermission: ["inventory.scanPutaway", "inventory.logInwardEntry"] },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
-  // Standalone SKU -> location search, independent of any active pick task
-  // (see the permissions addendum). Owner + Sales only for now.
-  { to: "/stock-lookup", label: "Find Stock", roles: ["OWNER", "SALES"] },
-  { to: "/pricing", label: "Pricing", roles: ["OWNER", "ACCOUNTANT"] },
+  // Standalone SKU -> location search, independent of any active pick task.
+  { to: "/stock-lookup", label: "Find Stock", permission: "inventory.viewStockFull" },
+  { to: "/pricing", label: "Pricing", anyPermission: ["pricing.manageInvoiceReference", "pricing.managePI"] },
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },
-  { to: "/settings", label: "Settings", roles: ["OWNER"] },
+  { to: "/settings", label: "Settings", permission: "admin.configureSettings" },
   { to: "/security", label: "Security" },
 ];
 
 export default function Layout() {
-  const { user, logout, hasRole, hasScanAccess, hasInwardEntryAccess } = useAuth();
+  const { user, logout, hasRole, hasPermission, hasAnyPermission } = useAuth();
   const visibleItems = NAV_ITEMS.filter(
     (item) =>
-      (!item.roles || hasRole(...item.roles)) ||
-      (item.scanGated && hasScanAccess) ||
-      (item.inwardGated && hasInwardEntryAccess)
+      (!item.roles && !item.permission && !item.anyPermission) ||
+      (!!item.roles && hasRole(...item.roles)) ||
+      (!!item.permission && hasPermission(item.permission)) ||
+      (!!item.anyPermission && hasAnyPermission(...item.anyPermission))
   );
 
   return (

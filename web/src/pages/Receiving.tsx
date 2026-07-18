@@ -10,7 +10,9 @@ import { compoundBreakdown } from "../lib/units";
 type ScannerTarget = "location" | "sku" | null;
 
 export default function Receiving() {
-  const { hasScanAccess, hasInwardEntryAccess } = useAuth();
+  const { hasPermission } = useAuth();
+  const hasScanAccess = hasPermission("inventory.scanPutaway");
+  const hasInwardEntryAccess = hasPermission("inventory.logInwardEntry");
   const [skus, setSkus] = useState<Sku[]>([]);
   const [skuId, setSkuId] = useState("");
   const [sourceType, setSourceType] = useState<"PURCHASE" | "PRODUCTION">("PURCHASE");

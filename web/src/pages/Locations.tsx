@@ -75,8 +75,8 @@ function LocationLookupOnly() {
 }
 
 function LocationsFullView() {
-  const { hasRole } = useAuth();
-  const canEdit = hasRole("OWNER", "ACCOUNTANT", "WAREHOUSE");
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission("masterdata.editLocation");
   const [locations, setLocations] = useState<Location[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);

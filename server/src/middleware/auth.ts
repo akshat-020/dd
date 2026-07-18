@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { verifyToken } from "../lib/jwt.js";
 import type { Role } from "../lib/roles.js";
-import { canUseScanActions, canLogInwardEntry } from "../lib/permissions.js";
+import { hasPermission, hasAnyPermission, type PermissionKey } from "../lib/permissions.js";
 import { touchSession } from "../lib/session.js";
 
 export interface AuthedRequest extends Request {
@@ -35,6 +35,12 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
   }
 }
 
+// Reserved for the handful of things that stay structurally role-based
+// rather than an individually-grantable permission — account/permission
+// management itself (routes/users.ts) and the audit hash-chain integrity
+// check (routes/reports.ts). Per the access-control model, Owner is the
+// only unrestricted role; nothing else should reach for this — use
+// requirePermission for anything that appears in the permission catalogue.
 export function requireRole(...roles: Role[]) {
   return (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
@@ -47,38 +53,44 @@ export function requireRole(...roles: Role[]) {
   };
 }
 
-// Gates scan-based putaway/pick actions. Looked up fresh from the DB on
-// every request (rather than baked into the JWT) so that an Owner revoking
-// a Sales account's permission takes effect immediately, not after the
-// token's 12h expiry.
-export async function requireScanAccess(req: AuthedRequest, res: Response, next: NextFunction) {
-  if (!req.user) {
-    return res.status(401).json({ error: "Unauthenticated" });
-  }
-  try {
-    const allowed = await canUseScanActions(req.user.id, req.user.role);
-    if (!allowed) {
-      return res.status(403).json({ error: "Forbidden: scan-based putaway/pick permission not granted" });
+// The general-purpose gate for anything in the permission catalogue.
+// Looked up fresh from the DB on every request (rather than baked into the
+// JWT) so that an Owner revoking someone's permission takes effect
+// immediately, not after the token's 12h expiry. Owner always passes,
+// unconditionally (see lib/permissions.ts's hasPermission).
+export function requirePermission(permission: PermissionKey) {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthenticated" });
     }
-    next();
-  } catch (err) {
-    next(err);
-  }
+    try {
+      const allowed = await hasPermission(req.user, permission);
+      if (!allowed) {
+        return res.status(403).json({ error: `Forbidden: "${permission}" permission not granted` });
+      }
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
 }
 
-// Gates logging a new inward stock entry (SKU + qty + supplier ref + date).
-// Same DB-backed, revoke-immediately pattern as requireScanAccess.
-export async function requireInwardEntryAccess(req: AuthedRequest, res: Response, next: NextFunction) {
-  if (!req.user) {
-    return res.status(401).json({ error: "Unauthenticated" });
-  }
-  try {
-    const allowed = await canLogInwardEntry(req.user.id, req.user.role);
-    if (!allowed) {
-      return res.status(403).json({ error: "Forbidden: inward-entry permission not granted" });
+// For the few routes where any one of several permissions is sufficient
+// (e.g. reading company settings, useful to both whoever configures them
+// and whoever creates a Proforma Invoice that displays them).
+export function requireAnyPermission(...permissions: PermissionKey[]) {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthenticated" });
     }
-    next();
-  } catch (err) {
-    next(err);
-  }
+    try {
+      const allowed = await hasAnyPermission(req.user, permissions);
+      if (!allowed) {
+        return res.status(403).json({ error: `Forbidden: none of [${permissions.join(", ")}] granted` });
+      }
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
 }

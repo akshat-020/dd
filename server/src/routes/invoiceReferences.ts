@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { applyStockMovement } from "../lib/stock.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
@@ -15,7 +15,7 @@ function serializeLines<T extends { price: string }>(lines: T[]) {
 // created in Tally, without replacing Tally as the invoice system of record.
 export const invoiceReferencesRouter = Router();
 
-invoiceReferencesRouter.use(requireAuth, requireRole("OWNER", "ACCOUNTANT"));
+invoiceReferencesRouter.use(requireAuth, requirePermission("pricing.manageInvoiceReference"));
 
 invoiceReferencesRouter.get("/order/:orderId", async (req, res) => {
   const refs = await prisma.invoiceReference.findMany({

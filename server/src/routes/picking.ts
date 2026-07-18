@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireScanAccess, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { applyStockMovement, InsufficientStockError } from "../lib/stock.js";
 
@@ -31,7 +31,7 @@ pickingRouter.get("/items/:itemId", async (req, res) => {
 
 const scanLocationSchema = z.object({ locationCode: z.string().min(1) });
 
-pickingRouter.post("/items/:itemId/scan-location", requireScanAccess, async (req, res) => {
+pickingRouter.post("/items/:itemId/scan-location", requirePermission("inventory.scanPutaway"), async (req, res) => {
   const parsed = scanLocationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 
@@ -48,7 +48,7 @@ pickingRouter.post("/items/:itemId/scan-location", requireScanAccess, async (req
 
 const scanSkuSchema = z.object({ label: z.string().min(1) });
 
-pickingRouter.post("/items/:itemId/scan-sku", requireScanAccess, async (req, res) => {
+pickingRouter.post("/items/:itemId/scan-sku", requirePermission("inventory.scanPutaway"), async (req, res) => {
   const parsed = scanSkuSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 
@@ -84,7 +84,7 @@ const confirmSchema = z.object({
   boxesOpened: z.number().int().min(0).optional(),
 });
 
-pickingRouter.post("/items/:itemId/confirm", requireScanAccess, async (req: AuthedRequest, res) => {
+pickingRouter.post("/items/:itemId/confirm", requirePermission("inventory.scanPutaway"), async (req: AuthedRequest, res) => {
   const parsed = confirmSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 

@@ -73,9 +73,9 @@ describe("inward entry logging: Owner + Sales(default true), never Accountant/Wa
   });
 
   it("Owner can revoke Sales' inward-entry access, it takes effect immediately, and is audited", async () => {
-    const revokeRes = await request(app).patch(`/api/users/${sales.user.id}`).set(auth(owner.token)).send({ canLogInwardEntry: false });
+    const revokeRes = await request(app).delete(`/api/users/${sales.user.id}/permissions/inventory.logInwardEntry`).set(auth(owner.token));
     expect(revokeRes.status).toBe(200);
-    expect(revokeRes.body.canLogInwardEntry).toBe(false);
+    expect(revokeRes.body.permissions).not.toContain("inventory.logInwardEntry");
 
     const blockedRes = await request(app)
       .post("/api/stock/batches")
@@ -84,15 +84,15 @@ describe("inward entry logging: Owner + Sales(default true), never Accountant/Wa
     expect(blockedRes.status).toBe(403);
 
     const audit = await request(app).get("/api/reports/audit-log?entityType=User").set(auth(owner.token));
-    const revokeEntry = audit.body.find((a: any) => a.action === "REVOKE_INWARD_ENTRY_ACCESS" && a.entityId === sales.user.id);
+    const revokeEntry = audit.body.find((a: any) => a.action === "REVOKE_PERMISSION" && a.entityId === sales.user.id);
     expect(revokeEntry).toBeTruthy();
 
     // restore for subsequent tests
-    await request(app).patch(`/api/users/${sales.user.id}`).set(auth(owner.token)).send({ canLogInwardEntry: true });
+    await request(app).put(`/api/users/${sales.user.id}/permissions/inventory.logInwardEntry`).set(auth(owner.token));
   });
 
   it("non-Owner cannot grant/revoke inward-entry access", async () => {
-    const res = await request(app).patch(`/api/users/${sales.user.id}`).set(auth(accountant.token)).send({ canLogInwardEntry: false });
+    const res = await request(app).delete(`/api/users/${sales.user.id}/permissions/inventory.logInwardEntry`).set(auth(accountant.token));
     expect(res.status).toBe(403);
   });
 });

@@ -9,6 +9,7 @@ import { createSession, revokeSession } from "../lib/session.js";
 import { recordAudit } from "../lib/audit.js";
 import { generateTotpSecret, totpKeyUri, verifyTotpCode } from "../lib/totp.js";
 import { PASSWORD_POLICY_MESSAGE, passwordSchema } from "../lib/password.js";
+import { ALL_PERMISSIONS, isPermissionKey } from "../lib/permissions.js";
 
 export const authRouter = Router();
 
@@ -18,23 +19,25 @@ const loginSchema = z.object({
   totpCode: z.string().optional(),
 });
 
-function publicUser(user: {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  canScanPutaway: boolean;
-  canLogInwardEntry: boolean;
-  totpEnabled: boolean;
-}) {
+// The client drives every permission-gated bit of UI off this list — Owner
+// gets the full catalogue back (Owner bypasses the UserPermission table
+// entirely server-side, so there's nothing to look up), everyone else gets
+// exactly the rows actually granted to them. No separate "role" branching
+// needed client-side: it's just membership in this array everywhere.
+async function publicUser(user: { id: string; name: string; email: string; role: string; totpEnabled: boolean }) {
+  const permissions =
+    user.role === "OWNER"
+      ? ALL_PERMISSIONS
+      : (await prisma.userPermission.findMany({ where: { userId: user.id }, select: { permission: true } }))
+          .map((p) => p.permission)
+          .filter(isPermissionKey);
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
-    canScanPutaway: user.canScanPutaway,
-    canLogInwardEntry: user.canLogInwardEntry,
     totpEnabled: user.totpEnabled,
+    permissions,
   };
 }
 
@@ -79,7 +82,7 @@ authRouter.post("/bootstrap", async (req, res) => {
 
   const session = await createSession(user.id, req.headers["user-agent"]);
   const token = signToken({ sub: user.id, role: "OWNER", name: user.name, sid: session.id });
-  res.status(201).json({ token, user: publicUser(user) });
+  res.status(201).json({ token, user: await publicUser(user) });
 });
 
 authRouter.post("/login", async (req, res) => {
@@ -115,7 +118,7 @@ authRouter.post("/login", async (req, res) => {
   const token = signToken({ sub: user.id, role: user.role, name: user.name, sid: session.id });
   await recordAudit({ userId: user.id, action: "LOGIN_SUCCESS", entityType: "User", entityId: user.id, after: { sessionId: session.id } });
 
-  res.json({ token, user: publicUser(user) });
+  res.json({ token, user: await publicUser(user) });
 });
 
 authRouter.post("/logout", requireAuth, async (req: AuthedRequest, res) => {
@@ -126,7 +129,7 @@ authRouter.post("/logout", requireAuth, async (req: AuthedRequest, res) => {
 authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
   if (!user) return res.status(404).json({ error: "User not found" });
-  res.json(publicUser(user));
+  res.json(await publicUser(user));
 });
 
 // ---- Optional TOTP 2FA (opt-in; recommended for Owner/Accountant since
