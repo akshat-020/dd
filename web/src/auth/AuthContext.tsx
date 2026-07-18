@@ -20,6 +20,11 @@ interface AuthContextValue {
   // where either of two permissions is sufficient (mirrors the server's
   // requireAnyPermission).
   hasAnyPermission: (...permissions: PermissionKey[]) => boolean;
+  // True only if every given permission is granted — for shared actions
+  // that sit upstream of more than one specific capability, where holding
+  // just one of them isn't enough (mirrors the server's
+  // requireAllPermissions).
+  hasAllPermissions: (...permissions: PermissionKey[]) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -73,10 +78,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (...permissions: PermissionKey[]) => !!user && permissions.some((p) => user.permissions.includes(p)),
     [user]
   );
+  const hasAllPermissions = useCallback(
+    (...permissions: PermissionKey[]) => !!user && permissions.every((p) => user.permissions.includes(p)),
+    [user]
+  );
 
   const value = useMemo(
-    () => ({ user, loading, login, logout, hasRole, hasPermission, hasAnyPermission }),
-    [user, loading, login, logout, hasRole, hasPermission, hasAnyPermission]
+    () => ({ user, loading, login, logout, hasRole, hasPermission, hasAnyPermission, hasAllPermissions }),
+    [user, loading, login, logout, hasRole, hasPermission, hasAnyPermission, hasAllPermissions]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

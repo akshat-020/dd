@@ -94,3 +94,26 @@ export function requireAnyPermission(...permissions: PermissionKey[]) {
     }
   };
 }
+
+// For a shared action that sits upstream of more than one specific
+// capability (e.g. setting an order's canonical price feeds both Invoice
+// Reference and Proforma Invoice creation) — holding only one of the
+// specific downstream permissions must not be enough to perform the
+// shared, more powerful write.
+export function requireAllPermissions(...permissions: PermissionKey[]) {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthenticated" });
+    }
+    try {
+      for (const permission of permissions) {
+        if (!(await hasPermission(req.user, permission))) {
+          return res.status(403).json({ error: `Forbidden: all of [${permissions.join(", ")}] required` });
+        }
+      }
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}

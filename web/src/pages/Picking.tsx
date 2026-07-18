@@ -1,15 +1,26 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import type { Order } from "../api/types";
+
+// Task-scoped shape from GET /api/picking/orders — deliberately not the
+// full Order type. That endpoint is gated on inventory.scanPutaway (rather
+// than the general /api/orders role list) precisely so a Warehouse account,
+// or anyone else granted scan/pick access, can reach it regardless of base
+// role — see routes/picking.ts.
+interface PickableOrder {
+  id: string;
+  orderNumber: string;
+  buyerName: string;
+  lineCount: number;
+}
 
 export default function Picking() {
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [orders, setOrders] = useState<PickableOrder[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
-      .get<Order[]>("/orders?status=FINALIZED")
+      .get<PickableOrder[]>("/picking/orders")
       .then(setOrders)
       .catch((e) => setError(e.message));
   }, []);
@@ -28,7 +39,7 @@ export default function Picking() {
             >
               <div className="text-lg font-semibold text-slate-900 dark:text-slate-50">{o.orderNumber}</div>
               <div className="text-sm text-slate-500 dark:text-slate-400">{o.buyerName}</div>
-              <div className="mt-1 text-xs text-slate-400">{o.lines.length} item{o.lines.length === 1 ? "" : "s"}</div>
+              <div className="mt-1 text-xs text-slate-400">{o.lineCount} item{o.lineCount === 1 ? "" : "s"}</div>
             </Link>
           </li>
         ))}

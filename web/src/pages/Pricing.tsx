@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import type { InvoiceReference, Order } from "../api/types";
 
 interface PricingLine {
@@ -20,6 +21,13 @@ interface PricingLine {
 }
 
 export default function Pricing() {
+  const { hasPermission, hasAllPermissions } = useAuth();
+  // Saving the order's canonical price is a shared write behind both
+  // financial document types — the server requires both permissions (see
+  // requireAllPermissions in routes/pricing.ts), so the form that writes it
+  // only shows for an account holding both, not just one.
+  const canSavePricing = hasAllPermissions("pricing.manageInvoiceReference", "pricing.managePI");
+
   const [searchParams, setSearchParams] = useSearchParams();
   const orderId = searchParams.get("order") ?? "";
 
@@ -55,12 +63,20 @@ export default function Pricing() {
           })
         )
       );
-      const refs = await api.get<InvoiceReference[]>(`/invoice-references/order/${orderId}`);
-      setInvoiceRefs(refs);
+      // Whole endpoint is gated on pricing.manageInvoiceReference — skip the
+      // call entirely for an account that doesn't hold it (e.g. PI-only)
+      // rather than surfacing its 403 as a scary top-level error banner for
+      // a perfectly normal, permitted state.
+      if (hasPermission("pricing.manageInvoiceReference")) {
+        const refs = await api.get<InvoiceReference[]>(`/invoice-references/order/${orderId}`);
+        setInvoiceRefs(refs);
+      } else {
+        setInvoiceRefs([]);
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load pricing");
     }
-  }, [orderId]);
+  }, [orderId, hasPermission]);
 
   useEffect(() => {
     loadPricing();
@@ -176,6 +192,12 @@ export default function Pricing() {
       {orderId && lines.length > 0 && (
         <form onSubmit={handleSavePricing} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Line pricing</h2>
+          {/* These inputs stay editable for anyone reaching this screen — the
+              value typed here also feeds "Add Invoice Reference" below,
+              which is independently gated on pricing.manageInvoiceReference
+              at its own endpoint and doesn't depend on "Save pricing"
+              succeeding. Only persisting this as the order's shared
+              canonical price (the button below) needs both permissions. */}
           <table className="w-full text-left text-sm">
             <thead className="text-xs uppercase text-slate-500 dark:text-slate-400">
               <tr>
@@ -211,13 +233,20 @@ export default function Pricing() {
               ))}
             </tbody>
           </table>
-          <button type="submit" disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-2 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
-            {busy ? "Saving…" : "Save pricing"}
-          </button>
+          {canSavePricing ? (
+            <button type="submit" disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-2 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
+              {busy ? "Saving…" : "Save pricing"}
+            </button>
+          ) : (
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Saving this as the order's stored price requires both the Invoice Reference and Proforma Invoice permissions. You can still use the price
+              typed above for whichever document you're permitted to create below.
+            </p>
+          )}
         </form>
       )}
 
-      {orderId && (
+      {orderId && hasPermission("pricing.manageInvoiceReference") && (
         <form onSubmit={handleAddInvoiceReference} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Add Invoice Reference (Tally)</h2>
           <div className="flex gap-2">

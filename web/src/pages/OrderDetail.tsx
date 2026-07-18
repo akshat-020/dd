@@ -191,21 +191,31 @@ export default function OrderDetail() {
   }
 
   // A PI is a snapshot of the order's current pricing at the moment it's
-  // generated — reusing the same pricing data Pricing.tsx already maintains
-  // rather than asking for prices a second time. If an ACTIVE PI already
-  // exists for this order, this is a reissue (server marks the old one
-  // SUPERSEDED and bumps the version) — same action, the button label is
-  // just informative about which case applies.
+  // generated. Prefers a price already explicitly saved for this order (via
+  // Manage pricing), and falls back to the SKU's Default Price (MRP) when
+  // none has been saved yet — the same prefill-without-binding role Default
+  // Price plays everywhere else pricing is entered. This fallback matters
+  // for an account holding only pricing.managePI (not
+  // pricing.manageInvoiceReference): saving an order-level price now
+  // requires both permissions (see requireAllPermissions in
+  // routes/pricing.ts — a managePI-only account was previously able to
+  // write that shared price despite being correctly blocked from Invoice
+  // Reference creation), so a managePI-only account can still generate a PI
+  // as long as the SKUs involved have a Default Price configured. If an
+  // ACTIVE PI already exists for this order, this is a reissue (server
+  // marks the old one SUPERSEDED and bumps the version) — same action, the
+  // button label is just informative about which case applies.
   async function generatePi(validDays: number) {
     if (!order) return;
     setPiBusy(true);
     setError(null);
     try {
-      const pricing = await api.get<{ lines: { skuId: string; qty: number; unit: string | null; unitQty: number | null; unitPrice: number | null }[] }>(
-        `/orders/${id}/pricing`
-      );
-      if (pricing.lines.length === 0 || pricing.lines.some((l) => l.unitPrice == null)) {
-        setError("Set a unit price for every line (via Manage pricing) before generating a Proforma Invoice.");
+      const pricing = await api.get<{
+        lines: { skuId: string; qty: number; unit: string | null; unitQty: number | null; unitPrice: number | null; defaultUnitPrice: number | null }[];
+      }>(`/orders/${id}/pricing`);
+      const effectivePrice = (l: (typeof pricing.lines)[number]) => l.unitPrice ?? l.defaultUnitPrice;
+      if (pricing.lines.length === 0 || pricing.lines.some((l) => effectivePrice(l) == null)) {
+        setError("Set a unit price for every line (via Manage pricing) or a Default Price on the SKU before generating a Proforma Invoice.");
         return;
       }
       const validUntil = new Date(Date.now() + validDays * 24 * 60 * 60 * 1000).toISOString();
@@ -216,7 +226,7 @@ export default function OrderDetail() {
           skuId: l.skuId,
           qty: l.unitQty ?? l.qty,
           unit: l.unit ?? order.lines.find((ol) => ol.skuId === l.skuId)?.sku.unit ?? "unit",
-          unitPrice: l.unitPrice,
+          unitPrice: effectivePrice(l),
         })),
       });
       setNotice("Proforma Invoice generated.");

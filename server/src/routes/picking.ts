@@ -9,6 +9,33 @@ export const pickingRouter = Router();
 
 pickingRouter.use(requireAuth);
 
+// Task-scoped entry point for the "Ready to pick" screen: every FINALIZED
+// order, regardless of who created it. Deliberately separate from GET
+// /api/orders (general order browsing, gated to the OWNER/ACCOUNTANT/SALES
+// role list — see that route's comment) so that anyone holding
+// inventory.scanPutaway can reach it regardless of their base role. That's
+// the exact case the access-control model exists to support — a Warehouse
+// account, or a Sales account additionally granted scan/pick access — and
+// was previously broken: this screen fetched through the general orders
+// endpoint, which hard-excludes anyone outside that role list even with
+// the permission granted. Never includes price, same as the rest of this
+// file.
+pickingRouter.get("/orders", requirePermission("inventory.scanPutaway"), async (_req, res) => {
+  const orders = await prisma.order.findMany({
+    where: { status: "FINALIZED" },
+    include: { lines: { select: { id: true } } },
+    orderBy: { finalizedAt: "asc" },
+  });
+  res.json(
+    orders.map((o) => ({
+      id: o.id,
+      orderNumber: o.orderNumber,
+      buyerName: o.buyerName,
+      lineCount: o.lines.length,
+    }))
+  );
+});
+
 // Loading/warehouse-facing pick list: SKU, quantity, location only — never
 // price. Deliberately does not include OrderLinePrice anywhere in this file.
 pickingRouter.get("/orders/:orderId", async (req, res) => {

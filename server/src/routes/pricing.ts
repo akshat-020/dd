@@ -1,15 +1,21 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireAnyPermission, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireAnyPermission, requireAllPermissions, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 
-// Mounted at /api/orders — setting a line's price is the shared first step
-// behind either financial document type (Invoice Reference or Proforma
-// Invoice), so either permission is sufficient here — same server-level
-// enforcement the brief calls for ("inaccessible at the API level, not
-// just hidden in the UI"), just no longer tied to a fixed role list.
+// Mounted at /api/orders. Reading (GET) only needs to be useful to whoever
+// is about to use it for one of the two financial document types, so
+// either permission is enough there. WRITING is different: this is the
+// order's single canonical price, which either document type can read —
+// holding only one of the two specific permissions must not be enough to
+// set it, or that account could write pricing data whose downstream use
+// (the other document type) it's explicitly not authorized for. See
+// PermissionEnforcementGap fix: an account with only pricing.managePI
+// (not pricing.manageInvoiceReference) was previously able to save order
+// pricing here despite being correctly blocked from creating an Invoice
+// Reference — both now require the full set.
 export const pricingRouter = Router();
 
 pricingRouter.use(requireAuth);
@@ -60,7 +66,7 @@ const setPricingSchema = z.object({
   lines: z.array(z.object({ lineId: z.string().min(1), unitPrice: z.number().nonnegative() })).min(1),
 });
 
-pricingRouter.put("/:id/pricing", requireAnyPermission("pricing.manageInvoiceReference", "pricing.managePI"), async (req: AuthedRequest, res) => {
+pricingRouter.put("/:id/pricing", requireAllPermissions("pricing.manageInvoiceReference", "pricing.managePI"), async (req: AuthedRequest, res) => {
   const parsed = setPricingSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
 
