@@ -318,7 +318,15 @@ export async function reconcileOrderLineAllocation(
       const pickedItems = thisLineItems.filter((i) => i.status === "PICKED").sort((a, b) => b.sequence - a.sequence);
       for (const item of pickedItems) {
         if (toRelease <= 0) break;
-        const take = Math.min(item.qtyPicked, toRelease);
+        // Cap by what's still actually owed on *this* item — its picked
+        // quantity net of any put-back already pending against it (same
+        // netting as currentAllocated above). Using the raw qtyPicked here
+        // would let an item that already has a fully-covering pending
+        // put-back soak up more of toRelease, double-queuing stock that was
+        // never really available to return a second time, while another
+        // item's genuine remaining debt goes unqueued.
+        const stillOwed = item.qtyPicked - (pendingBySourceItem.get(item.id) ?? 0);
+        const take = Math.min(stillOwed, toRelease);
         if (take <= 0) continue;
         await tx.putBackTask.create({
           data: {
