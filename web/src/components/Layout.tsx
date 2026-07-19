@@ -30,7 +30,6 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/locations", label: "Locations" },
   // Standalone SKU -> location search, independent of any active pick task.
   { to: "/stock-lookup", label: "Find Stock", permission: "inventory.viewStockFull" },
-  { to: "/pricing", label: "Pricing", anyPermission: ["pricing.manageInvoiceReference", "pricing.managePI"] },
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },
   { to: "/settings", label: "Settings", permission: "admin.configureSettings" },

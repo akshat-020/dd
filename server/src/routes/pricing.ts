@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAnyPermission, requireAllPermissions, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
+import { skuDefaultPriceForUnit } from "../lib/pricing.js";
 
 // Mounted at /api/orders. Reading (GET) only needs to be useful to whoever
 // is about to use it for one of the two financial document types, so
@@ -19,18 +20,6 @@ import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 export const pricingRouter = Router();
 
 pricingRouter.use(requireAuth);
-
-// Which of a SKU's two Default Price fields applies to a given line depends
-// on which unit that line is actually in — Box and Pcs are priced
-// independently (see the unit-conversion addendum), there's no single
-// "the" default. Returned purely as a prefill hint alongside the line's
-// real `unitPrice` (if one's already been explicitly set) — never applied
-// automatically server-side, and never retroactive to a price already set.
-function skuDefaultPriceForUnit(sku: { altUnitName: string | null; defaultPrice: string | null; defaultAltUnitPrice: string | null }, lineUnit: string | null) {
-  const isAltUnit = lineUnit != null && sku.altUnitName != null && lineUnit === sku.altUnitName;
-  const raw = isAltUnit ? sku.defaultAltUnitPrice : sku.defaultPrice;
-  return raw ? decryptNumber(raw) : null;
-}
 
 pricingRouter.get("/:id/pricing", requireAnyPermission("pricing.manageInvoiceReference", "pricing.managePI"), async (req, res) => {
   const order = await prisma.order.findUnique({

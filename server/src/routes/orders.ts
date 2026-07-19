@@ -1,11 +1,12 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
-import { hasPermission } from "../lib/permissions.js";
+import { hasPermission, hasAnyPermission } from "../lib/permissions.js";
 import type { Role } from "../lib/roles.js";
 import { decryptNumber } from "../lib/crypto.js";
+import { skuDefaultPriceForUnit } from "../lib/pricing.js";
 import { getCommittedQuantities, reconcileOrderLineAllocation, ShortfallError } from "../lib/stock.js";
 import { resolveUnitFactor, toBaseQty, InvalidUnitError } from "../lib/units.js";
 
@@ -13,8 +14,30 @@ export const ordersRouter = Router();
 
 ordersRouter.use(requireAuth);
 
+// Broadened beyond just pricing.viewSalePrice: an account holding either of
+// the two financial-document permissions needs to see price on an order
+// it's working with too, even without the general "view sale price"
+// permission — same reasoning as the OR-gated GET /:id/pricing endpoint.
 function canSeePrice(user: { id: string; role: Role }) {
-  return hasPermission(user, "pricing.viewSalePrice");
+  return hasAnyPermission(user, ["pricing.viewSalePrice", "pricing.manageInvoiceReference", "pricing.managePI"]);
+}
+
+// General order browsing (GET /) stays deliberately scoped to
+// OWNER/ACCOUNTANT/SALES — it was never part of the permission catalogue,
+// see that route's own comment. But the order *detail* view (this order,
+// specifically) is also where pricing/Invoice Reference/Proforma Invoice
+// now live inline (see the order-screen consolidation), so an account
+// holding either of those two permissions needs to reach a specific
+// order's detail page even from a base role outside that list — the same
+// class of gap already fixed for the picking screen (a permission grant
+// that a role-list gate couldn't honor).
+function requireOrderViewAccess() {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthenticated" });
+    if (["OWNER", "ACCOUNTANT", "SALES"].includes(req.user.role)) return next();
+    if (await hasAnyPermission(req.user, ["pricing.manageInvoiceReference", "pricing.managePI"])) return next();
+    return res.status(403).json({ error: "Forbidden: insufficient role" });
+  };
 }
 
 // A DRAFT order is a not-yet-committed conversation with a buyer — visible
@@ -99,7 +122,15 @@ async function serializeOrder(orderId: string, includePrice: boolean) {
     lines: order.lines.map((line: any) => {
       const { price, ...rest } = line;
       const withPending = { ...rest, pendingPutBackQty: pendingByLine.get(line.id) ?? 0 };
-      return includePrice ? { ...withPending, unitPrice: price ? decryptNumber(price.unitPrice) : null } : withPending;
+      if (!includePrice) return withPending;
+      const unit = line.finalUnit ?? line.requestedUnit ?? null;
+      return {
+        ...withPending,
+        unitPrice: price ? decryptNumber(price.unitPrice) : null,
+        // Prefill hint for the order screen's inline price editor — same
+        // rule as GET /:id/pricing, kept in sync via the shared helper.
+        defaultUnitPrice: skuDefaultPriceForUnit(line.sku, unit),
+      };
     }),
   };
 }
@@ -173,7 +204,7 @@ ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: A
   res.json(serialized);
 });
 
-ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
+ordersRouter.get("/:id", requireOrderViewAccess(), async (req: AuthedRequest, res) => {
   const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
   if (!raw || !(await canAccessOrder(req.user!, raw))) return res.status(404).json({ error: "Order not found" });
   const order = await serializeOrder(req.params.id, await canSeePrice(req.user!));
@@ -188,7 +219,7 @@ ordersRouter.get("/:id", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req
 // no new instrumentation. Sales gets a role-safe summary of each event
 // (e.g. "Invoice reference logged") with no price data attached; Owner/
 // Accountant additionally get the full before/after detail.
-ordersRouter.get("/:id/audit", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
+ordersRouter.get("/:id/audit", requireOrderViewAccess(), async (req: AuthedRequest, res) => {
   const raw = await prisma.order.findUnique({ where: { id: req.params.id }, select: { status: true, createdById: true } });
   if (!raw || !(await canAccessOrder(req.user!, raw))) return res.status(404).json({ error: "Order not found" });
 
@@ -294,7 +325,7 @@ ordersRouter.post("/", requirePermission("orders.createDraft"), async (req: Auth
 // orders' pick-list qty) — checking against raw on-hand alone lets two
 // orders both get told a SKU is available when there's really only enough
 // for one (see getCommittedQuantities in lib/stock.ts).
-ordersRouter.get("/:id/stock-check", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: AuthedRequest, res) => {
+ordersRouter.get("/:id/stock-check", requireOrderViewAccess(), async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: { include: { sku: true } } } });
   if (!order) return res.status(404).json({ error: "Order not found" });
   if (!(await canAccessOrder(req.user!, order))) return res.status(404).json({ error: "Order not found" });

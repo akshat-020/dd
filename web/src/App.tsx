@@ -12,7 +12,6 @@ import OrderDetail from "./pages/OrderDetail";
 import Picking from "./pages/Picking";
 import PickingSession from "./pages/PickingSession";
 import Receiving from "./pages/Receiving";
-import Pricing from "./pages/Pricing";
 import Reports from "./pages/Reports";
 import Users from "./pages/Users";
 import Security from "./pages/Security";
@@ -64,7 +63,15 @@ export default function App() {
             <Route
               path="/orders/:id"
               element={
-                <ProtectedRoute roles={["OWNER", "ACCOUNTANT", "SALES"]}>
+                // Broadened beyond the general order-browsing role list:
+                // pricing/Invoice Reference/Proforma Invoice now live
+                // inline on this screen (see the order-screen
+                // consolidation), so an account holding either of those
+                // two permissions needs to reach a specific order's detail
+                // page even from a base role outside that list — mirrors
+                // the server's own requireOrderViewAccess in
+                // routes/orders.ts.
+                <ProtectedRoute roles={["OWNER", "ACCOUNTANT", "SALES"]} anyPermission={["pricing.manageInvoiceReference", "pricing.managePI"]}>
                   <OrderDetail />
                 </ProtectedRoute>
               }
@@ -90,14 +97,6 @@ export default function App() {
               element={
                 <ProtectedRoute anyPermission={["inventory.scanPutaway", "inventory.logInwardEntry"]}>
                   <Receiving />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/pricing"
-              element={
-                <ProtectedRoute anyPermission={["pricing.manageInvoiceReference", "pricing.managePI"]}>
-                  <Pricing />
                 </ProtectedRoute>
               }
             />

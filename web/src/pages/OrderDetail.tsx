@@ -3,12 +3,12 @@ import { Link, useParams } from "react-router-dom";
 import { api, ApiError, getToken } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { SkuCombobox } from "../components/SkuCombobox";
-import type { Order, OrderAuditEntry, PickListItem, ProformaInvoice, Sku, StockCheckResult } from "../api/types";
+import type { InvoiceReference, Order, OrderAuditEntry, OrderLine, PickListItem, ProformaInvoice, Sku, StockCheckResult } from "../api/types";
 import { availableUnits, compoundBreakdown } from "../lib/units";
 
 export default function OrderDetail() {
   const { id } = useParams<{ id: string }>();
-  const { hasRole, hasPermission, hasAnyPermission } = useAuth();
+  const { hasRole, hasPermission, hasAnyPermission, hasAllPermissions } = useAuth();
   // Single permission gates the whole PATCH /orders/:id endpoint regardless
   // of order status (draft header, lines, Final Qty adjustments post-pick
   // all go through it) — "Finalize" is its own separate action/permission
@@ -16,7 +16,20 @@ export default function OrderDetail() {
   // an existing one are different workflows that can be granted apart.
   const canEdit = hasPermission("orders.editFinalized");
   const canFinalize = hasPermission("orders.createDraft");
-  const canSeePrice = hasPermission("pricing.viewSalePrice");
+  // Broadened beyond pricing.viewSalePrice: an account holding either
+  // financial-document permission needs to see price on this order too,
+  // even without general sale-price visibility — the server applies the
+  // exact same rule (see canSeePrice in routes/orders.ts), so this only
+  // ever mirrors what the API actually sends, never guesses ahead of it.
+  const canSeePrice = hasAnyPermission("pricing.viewSalePrice", "pricing.manageInvoiceReference", "pricing.managePI");
+  // Setting the order's canonical Unit Price inline is the same write as
+  // the old "Save pricing" screen (PUT /orders/:id/pricing) — the fix for
+  // the reported permission gap requires both document permissions, not
+  // just one, since either one alone let an account write pricing data
+  // whose downstream use (the other document type) it wasn't authorized
+  // for. See requireAllPermissions in routes/pricing.ts.
+  const canEditPrice = hasAllPermissions("pricing.manageInvoiceReference", "pricing.managePI");
+  const canManageInvoiceReference = hasPermission("pricing.manageInvoiceReference");
 
   const [order, setOrder] = useState<Order | null>(null);
   const [skus, setSkus] = useState<Sku[]>([]);
@@ -26,6 +39,9 @@ export default function OrderDetail() {
   const [showAudit, setShowAudit] = useState(false);
   const [proformaInvoices, setProformaInvoices] = useState<ProformaInvoice[]>([]);
   const [piBusy, setPiBusy] = useState(false);
+  const [invoiceRefs, setInvoiceRefs] = useState<InvoiceReference[]>([]);
+  const [tallyNumber, setTallyNumber] = useState("");
+  const [invoiceRefBusy, setInvoiceRefBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -62,6 +78,17 @@ export default function OrderDetail() {
           .then(setProformaInvoices)
           .catch(() => {});
       }
+      // Whole endpoint is gated on pricing.manageInvoiceReference — skip
+      // the call entirely for an account that doesn't hold it, rather than
+      // surfacing its 403 as a top-level error banner for a perfectly
+      // normal, permitted state (same fix already applied to the old
+      // standalone Pricing screen this section replaces).
+      if (canManageInvoiceReference) {
+        api
+          .get<InvoiceReference[]>(`/invoice-references/order/${id}`)
+          .then(setInvoiceRefs)
+          .catch(() => {});
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load order");
     }
@@ -72,7 +99,7 @@ export default function OrderDetail() {
       .get<OrderAuditEntry[]>(`/orders/${id}/audit`)
       .then(setAuditEntries)
       .catch(() => {});
-  }, [id, canSeePrice, hasPermission]);
+  }, [id, hasPermission, canManageInvoiceReference]);
 
   useEffect(() => {
     load();
@@ -190,14 +217,96 @@ export default function OrderDetail() {
     }
   }
 
+  // Writes a single line's Unit Price — the same PUT /orders/:id/pricing
+  // endpoint the old standalone Pricing screen used, now called inline as
+  // each line is edited instead of one batched "Save pricing" submit.
+  // Server-side this is the write requireAllPermissions gates (see
+  // canEditPrice above); a single-line array is a valid partial update.
+  async function updateUnitPrice(lineId: string, unitPrice: number) {
+    await api.put(`/orders/${id}/pricing`, { lines: [{ lineId, unitPrice }] });
+    await load();
+  }
+
+  // Invoice Reference (Tally) — moved inline from the old standalone
+  // Pricing screen, same spirit as the Proforma Invoice section below.
+  // Uses whatever Unit Price is currently on each line (already-saved
+  // value, or the SKU's Default Price as a fallback — same reasoning as
+  // generatePi below) rather than a separate typed-but-unsaved price, since
+  // there's now only one Unit Price control per line, not a second copy
+  // living in this form's own local state.
+  async function handleAddInvoiceReference(e: React.FormEvent) {
+    e.preventDefault();
+    if (!tallyNumber || !order) return;
+    const unpriced = order.lines.filter((l) => l.unitPrice == null && l.defaultUnitPrice == null);
+    if (unpriced.length > 0) {
+      setError("Set a Unit Price for every line above, or a Default Price on the SKU, before creating the invoice reference.");
+      return;
+    }
+    setInvoiceRefBusy(true);
+    setError(null);
+    try {
+      await api.post("/invoice-references", {
+        tallyInvoiceNumber: tallyNumber,
+        orderId: id,
+        lines: order.lines.map((l) => {
+          const { unit, unitQty } = lineBilling(l);
+          return { skuId: l.skuId, qty: unitQty, unit, price: l.unitPrice ?? l.defaultUnitPrice };
+        }),
+      });
+      setTallyNumber("");
+      setNotice("Invoice reference added.");
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to add invoice reference");
+    } finally {
+      setInvoiceRefBusy(false);
+    }
+  }
+
+  async function handleCancelInvoiceRef(refId: string) {
+    if (invoiceRefBusy) return;
+    const reverseStock = confirm("Were goods actually returned? OK = reverse stock, Cancel = paperwork-only void.");
+    setInvoiceRefBusy(true);
+    setError(null);
+    try {
+      await api.post(`/invoice-references/${refId}/cancel`, { reverseStock });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to cancel invoice reference");
+    } finally {
+      setInvoiceRefBusy(false);
+    }
+  }
+
+  async function handleAdjustInvoiceRef(refId: string, lineId: string, currentQty: number, currentPrice: number) {
+    if (invoiceRefBusy) return;
+    const qtyStr = prompt("New quantity", String(currentQty));
+    if (qtyStr === null) return;
+    const priceStr = prompt("New price", String(currentPrice));
+    if (priceStr === null) return;
+    setInvoiceRefBusy(true);
+    setError(null);
+    try {
+      await api.post(`/invoice-references/${refId}/adjust`, {
+        lines: [{ invoiceLineId: lineId, qty: Number(qtyStr), price: Number(priceStr) }],
+      });
+      setNotice("Invoice reference adjusted; stock movement recorded.");
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to adjust invoice reference");
+    } finally {
+      setInvoiceRefBusy(false);
+    }
+  }
+
   // A PI is a snapshot of the order's current pricing at the moment it's
-  // generated. Prefers a price already explicitly saved for this order (via
-  // Manage pricing), and falls back to the SKU's Default Price (MRP) when
-  // none has been saved yet — the same prefill-without-binding role Default
-  // Price plays everywhere else pricing is entered. This fallback matters
-  // for an account holding only pricing.managePI (not
-  // pricing.manageInvoiceReference): saving an order-level price now
-  // requires both permissions (see requireAllPermissions in
+  // generated. Prefers a price already explicitly saved on the line (the
+  // inline Unit Price editor below), and falls back to the SKU's Default
+  // Price (MRP) when none has been saved yet — the same prefill-without-
+  // binding role Default Price plays everywhere else pricing is entered.
+  // This fallback matters for an account holding only pricing.managePI
+  // (not pricing.manageInvoiceReference): saving the order's canonical
+  // price requires both permissions (see requireAllPermissions in
   // routes/pricing.ts — a managePI-only account was previously able to
   // write that shared price despite being correctly blocked from Invoice
   // Reference creation), so a managePI-only account can still generate a PI
@@ -210,24 +319,19 @@ export default function OrderDetail() {
     setPiBusy(true);
     setError(null);
     try {
-      const pricing = await api.get<{
-        lines: { skuId: string; qty: number; unit: string | null; unitQty: number | null; unitPrice: number | null; defaultUnitPrice: number | null }[];
-      }>(`/orders/${id}/pricing`);
-      const effectivePrice = (l: (typeof pricing.lines)[number]) => l.unitPrice ?? l.defaultUnitPrice;
-      if (pricing.lines.length === 0 || pricing.lines.some((l) => effectivePrice(l) == null)) {
-        setError("Set a unit price for every line (via Manage pricing) or a Default Price on the SKU before generating a Proforma Invoice.");
+      const effectivePrice = (l: OrderLine) => l.unitPrice ?? l.defaultUnitPrice ?? null;
+      if (order.lines.length === 0 || order.lines.some((l) => effectivePrice(l) == null)) {
+        setError("Set a Unit Price for every line above, or a Default Price on the SKU, before generating a Proforma Invoice.");
         return;
       }
       const validUntil = new Date(Date.now() + validDays * 24 * 60 * 60 * 1000).toISOString();
       await api.post("/proforma-invoices", {
         orderId: id,
         validUntil,
-        lines: pricing.lines.map((l) => ({
-          skuId: l.skuId,
-          qty: l.unitQty ?? l.qty,
-          unit: l.unit ?? order.lines.find((ol) => ol.skuId === l.skuId)?.sku.unit ?? "unit",
-          unitPrice: effectivePrice(l),
-        })),
+        lines: order.lines.map((l) => {
+          const { unit, unitQty } = lineBilling(l);
+          return { skuId: l.skuId, qty: unitQty, unit, unitPrice: effectivePrice(l) };
+        }),
       });
       setNotice("Proforma Invoice generated.");
       load();
@@ -386,7 +490,16 @@ export default function OrderDetail() {
                       )}
                     </td>
                   )}
-                  {canSeePrice && !isDraft && <td className="px-4 py-2">{line.unitPrice != null ? `₹${line.unitPrice}` : "—"}</td>}
+                  {canSeePrice && !isDraft && (
+                    <td className="px-4 py-2">
+                      <PriceCell
+                        unitPrice={line.unitPrice ?? null}
+                        defaultUnitPrice={line.defaultUnitPrice ?? null}
+                        editable={canEditPrice}
+                        onSave={(price) => updateUnitPrice(line.id, price)}
+                      />
+                    </td>
+                  )}
                   {isEditable && canEdit && (
                     <td className="px-4 py-2">
                       <button
@@ -462,13 +575,16 @@ export default function OrderDetail() {
         </section>
       )}
 
-      {hasAnyPermission("pricing.manageInvoiceReference", "pricing.managePI") && !isDraft && (
-        <Link
-          to={`/pricing?order=${id}`}
-          className="block w-full rounded-lg border border-slate-300 px-4 py-3 text-center font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300"
-        >
-          Manage pricing & invoice reference →
-        </Link>
+      {canManageInvoiceReference && !isDraft && (
+        <InvoiceReferenceSection
+          invoiceRefs={invoiceRefs}
+          busy={invoiceRefBusy}
+          tallyNumber={tallyNumber}
+          onTallyNumberChange={setTallyNumber}
+          onAdd={handleAddInvoiceReference}
+          onCancel={handleCancelInvoiceRef}
+          onAdjust={handleAdjustInvoiceRef}
+        />
       )}
 
       {hasPermission("pricing.managePI") && !isDraft && (
@@ -497,6 +613,21 @@ export default function OrderDetail() {
 function formatUnitQty(baseQty: number, baseUnit: string, unit: string | null | undefined, unitQty: number | null | undefined) {
   if (!unit || unit === baseUnit || unitQty == null) return `${baseQty} ${baseUnit}`;
   return `${unitQty} ${unit} (${baseQty} ${baseUnit})`;
+}
+
+// What a line actually bills as — Proforma Invoice and Invoice Reference
+// creation both bill per 1 of whichever unit the line was finalized in
+// (falling back to requested, then the SKU's base unit), not the base-unit
+// qty, since Box/bulk pricing carries its own margin. Mirrors the same
+// unit-selection logic routes/pricing.ts and routes/orders.ts's
+// skuDefaultPriceForUnit use server-side, kept in sync by hand since this
+// is purely a display/billing-payload concern, not something the server
+// needs to compute for the client.
+function lineBilling(line: OrderLine) {
+  const finalQty = line.qtyFinalized ?? line.qtyRequested;
+  const unit = line.finalUnit ?? line.requestedUnit ?? line.sku.unit;
+  const unitQty = line.finalUnitQty ?? line.requestedUnitQty ?? finalQty;
+  return { unit, unitQty };
 }
 
 // Explicit edit -> Save/Cancel for the one editable quantity field, instead
@@ -620,6 +751,210 @@ function FinalQtyCell({
       </div>
       {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
+  );
+}
+
+// Consolidation: Unit Price used to live only on the standalone Pricing
+// screen — now it's directly editable in the order line table. Same
+// explicit Edit -> Save/Cancel pattern as FinalQtyCell above, for the same
+// reason (no onBlur auto-save with no visible action or confirmation — see
+// round 3 bug #1). `editable` reflects canEditPrice (both financial-
+// document permissions); a viewer with only one, or neither, still sees
+// the value read-only per the server's own field-level protection.
+function PriceCell({
+  unitPrice,
+  defaultUnitPrice,
+  editable,
+  onSave,
+}: {
+  unitPrice: number | null;
+  defaultUnitPrice: number | null;
+  editable: boolean;
+  onSave: (price: number) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(unitPrice ?? defaultUnitPrice ?? ""));
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setValue(String(unitPrice ?? defaultUnitPrice ?? ""));
+  }, [unitPrice, defaultUnitPrice]);
+
+  function display() {
+    if (unitPrice != null) return <span>₹{unitPrice}</span>;
+    if (defaultUnitPrice != null) {
+      return (
+        <span className="text-slate-400" title="Prefilled from this SKU's Default Price (MRP) — not yet saved">
+          ₹{defaultUnitPrice} (default)
+        </span>
+      );
+    }
+    return <span>—</span>;
+  }
+
+  if (!editable) return display();
+
+  async function handleSave() {
+    const v = Number(value);
+    if (!(v >= 0)) {
+      setError("Enter a valid price");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(v);
+      setEditing(false);
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2">
+        {display()}
+        <button
+          onClick={() => {
+            setEditing(true);
+            setSaved(false);
+            setValue(String(unitPrice ?? defaultUnitPrice ?? ""));
+          }}
+          className="text-xs font-medium text-blue-600 underline dark:text-blue-400"
+        >
+          Edit
+        </button>
+        {saved && <span className="text-xs text-green-600 dark:text-green-400">Saved ✓</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          value={value}
+          disabled={saving}
+          onChange={(e) => setValue(e.target.value)}
+          className="w-24 rounded border border-slate-300 px-2 py-1 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800"
+        />
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => {
+            setEditing(false);
+            setValue(String(unitPrice ?? defaultUnitPrice ?? ""));
+            setError(null);
+          }}
+          className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-slate-700"
+        >
+          Cancel
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+// Invoice Reference (Tally) — moved inline from the old standalone Pricing
+// screen (deprecated entirely, see the order-screen consolidation), same
+// spirit as ProformaInvoiceSection below: its own section on this one
+// screen rather than a separate destination to navigate to.
+function InvoiceReferenceSection({
+  invoiceRefs,
+  busy,
+  tallyNumber,
+  onTallyNumberChange,
+  onAdd,
+  onCancel,
+  onAdjust,
+}: {
+  invoiceRefs: InvoiceReference[];
+  busy: boolean;
+  tallyNumber: string;
+  onTallyNumberChange: (v: string) => void;
+  onAdd: (e: React.FormEvent) => void;
+  onCancel: (refId: string) => void;
+  onAdjust: (refId: string, lineId: string, currentQty: number, currentPrice: number) => void;
+}) {
+  return (
+    <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+      <h2 className="text-base font-semibold text-slate-900 dark:text-slate-50">Invoice Reference (Tally)</h2>
+
+      {invoiceRefs.length > 0 && (
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {invoiceRefs.map((ref) => (
+            <li key={ref.id} className="py-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-slate-900 dark:text-slate-50">{ref.tallyInvoiceNumber}</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    ref.status === "CANCELLED"
+                      ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
+                      : ref.status === "ADJUSTED"
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                        : "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
+                  }`}
+                >
+                  {ref.status}
+                </span>
+              </div>
+              <ul className="mt-1 space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                {ref.lines.map((l) => (
+                  <li key={l.id} className="flex items-center justify-between">
+                    <span>
+                      {l.sku?.code ?? l.skuId} · {l.qty} {l.unit ?? l.sku?.unit ?? ""} × ₹{l.price}
+                    </span>
+                    {ref.status !== "CANCELLED" && (
+                      <button onClick={() => onAdjust(ref.id, l.id, l.qty, l.price)} disabled={busy} className="text-xs underline disabled:opacity-50">
+                        {busy ? "Working…" : "Adjust"}
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {ref.status !== "CANCELLED" && (
+                <button
+                  onClick={() => onCancel(ref.id)}
+                  disabled={busy}
+                  className="mt-1 text-xs font-medium text-red-600 underline disabled:opacity-50 dark:text-red-400"
+                >
+                  {busy ? "Working…" : "Cancel invoice reference"}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form onSubmit={onAdd} className="flex gap-2 pt-1">
+        <input
+          value={tallyNumber}
+          disabled={busy}
+          onChange={(e) => onTallyNumberChange(e.target.value)}
+          placeholder="Tally invoice number"
+          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        />
+        <button type="submit" disabled={busy} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
+          {busy ? "Adding…" : "Add"}
+        </button>
+      </form>
+    </section>
   );
 }
 

@@ -124,6 +124,11 @@ export interface OrderLine {
   notes?: string | null;
   sku: Sku;
   unitPrice?: number | null;
+  // Prefill hint from the SKU's Default Price (MRP) for whichever unit this
+  // line is actually in — same field-level protection as unitPrice (absent
+  // entirely for a viewer without pricing access, not just null). Never
+  // applied automatically; see lib/pricing.ts's skuDefaultPriceForUnit.
+  defaultUnitPrice?: number | null;
   // How Requested/Final Qty were actually entered — null means this line
   // predates multi-unit support (display falls back to qty + sku.unit).
   requestedUnit?: string | null;
