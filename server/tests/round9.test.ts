@@ -99,7 +99,7 @@ describe("Access Control Model — orders.viewFullHistory is a hard ceiling, not
     const oldOrder = await request(app).post("/api/orders").set(auth(sales.token)).send({ buyerName: "Round9 Old Concluded", lines: [{ skuId: sku.id, qtyRequested: 1 }] });
     await prisma.order.update({
       where: { id: oldOrder.body.id },
-      data: { status: "INVOICED", createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+      data: { status: "COMPLETED", createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
     });
 
     // Sales lacks orders.viewFullHistory by default — an explicit search for

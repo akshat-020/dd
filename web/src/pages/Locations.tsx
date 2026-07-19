@@ -198,7 +198,11 @@ function LocationsFullView() {
 
       {showPrintSheet && <PrintSheet locations={locations} />}
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      {/* overflow-x-auto, not overflow-hidden — see the same fix on
+          OrderDetail.tsx's line-items table: a narrow/mobile viewport can't
+          fit every column, and overflow-hidden would silently clip the
+          rightmost ones instead of letting the card scroll to reach them. */}
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
             <tr>

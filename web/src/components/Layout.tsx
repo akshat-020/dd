@@ -33,6 +33,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/reports", label: "Reports" },
   { to: "/users", label: "Users", roles: ["OWNER"] },
   { to: "/settings", label: "Settings", permission: "admin.configureSettings" },
+  // Onboarding-only, Owner-only — see routes/openingStock.ts.
+  { to: "/opening-stock", label: "Opening Stock", roles: ["OWNER"] },
   { to: "/security", label: "Security" },
 ];
 

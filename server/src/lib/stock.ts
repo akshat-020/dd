@@ -24,13 +24,18 @@ export async function applyStockMovement(
     locationId: string;
     batchId?: string | null;
     quantity: number; // signed delta: positive = stock added, negative = stock removed
-    type: "INBOUND" | "OUTBOUND" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT";
+    type: "INBOUND" | "OUTBOUND" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT" | "OPENING_STOCK";
     reason?: string;
     refOrderId?: string;
     refInvoiceRefId?: string;
     relatedMovementId?: string;
     userId: string;
     allowNegative?: boolean;
+    // Opening Stock import only — lets a declared starting balance carry the
+    // date it actually represents (e.g. "as of go-live") rather than the
+    // moment it happened to be keyed in. Every other caller leaves this
+    // unset and gets the real current time, same as before.
+    createdAt?: Date;
   }
 ) {
   const batchId = params.batchId ?? null;
@@ -60,6 +65,7 @@ export async function applyStockMovement(
       refInvoiceRefId: params.refInvoiceRefId,
       relatedMovementId: params.relatedMovementId,
       userId: params.userId,
+      ...(params.createdAt ? { createdAt: params.createdAt } : {}),
     },
   });
 
@@ -71,9 +77,9 @@ export async function applyStockMovement(
 // order lines (a soft promise made at order-intake time) plus FINALIZED
 // orders' not-yet-picked pick list quantity (a hard allocation made at
 // finalize time, but stock isn't actually decremented until the physical
-// pick-confirm scan). LOADED/INVOICED/CANCELLED orders need no entry here:
+// pick-confirm scan). LOADED/COMPLETED/CANCELLED orders need no entry here:
 // LOADED means every pick list item already hit applyStockMovement, so it's
-// already reflected in StockItem; CANCELLED/INVOICED never held stock or
+// already reflected in StockItem; CANCELLED/COMPLETED never held stock or
 // already released it. Pass `excludeOrderId` to leave the order being
 // evaluated out of its own commitment total.
 export async function getCommittedQuantities(

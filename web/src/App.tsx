@@ -20,6 +20,7 @@ import StockLookup from "./pages/StockLookup";
 import StockTransfer from "./pages/StockTransfer";
 import PutBacks from "./pages/PutBacks";
 import SettingsPage from "./pages/Settings";
+import OpeningStock from "./pages/OpeningStock";
 
 function LoginRoute() {
   const { user, loading } = useAuth();
@@ -147,6 +148,14 @@ export default function App() {
               element={
                 <ProtectedRoute roles={["OWNER"]}>
                   <Users />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/opening-stock"
+              element={
+                <ProtectedRoute roles={["OWNER"]}>
+                  <OpeningStock />
                 </ProtectedRoute>
               }
             />

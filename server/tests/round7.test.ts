@@ -85,7 +85,7 @@ describe("#2 order book default filtering", () => {
     const sku = await prisma.sku.create({ data: { code: "R7-SKU-2", name: "Round7 Filter Widget", unit: "pc" } });
 
     const oldInvoiced = await request(app).post("/api/orders").set(auth(sales.token)).send({ buyerName: "Round7 Old Invoiced", lines: [{ skuId: sku.id, qtyRequested: 1 }] });
-    await prisma.order.update({ where: { id: oldInvoiced.body.id }, data: { status: "INVOICED", createdAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000) } });
+    await prisma.order.update({ where: { id: oldInvoiced.body.id }, data: { status: "COMPLETED", createdAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000) } });
 
     const oldActive = await request(app).post("/api/orders").set(auth(sales.token)).send({ buyerName: "Round7 Old Active", lines: [{ skuId: sku.id, qtyRequested: 1 }] });
     await prisma.order.update({ where: { id: oldActive.body.id }, data: { createdAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000) } }); // still DRAFT

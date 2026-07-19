@@ -224,7 +224,7 @@ describe("#4 finalized orders stay editable and edits propagate to the pick list
     expect(removeUnpickedLine.body.lines.find((l: any) => l.id === lineB.id)).toBeUndefined();
   });
 
-  it("a LOADED order stays editable (needed for post-pick put-back adjustments) but an INVOICED order is locked", async () => {
+  it("a LOADED order stays editable (needed for post-pick put-back adjustments) but a COMPLETED (dispatched) order is locked", async () => {
     const { sku, loc } = await skuWithStock(10);
     const order = await request(app)
       .post("/api/orders")
@@ -238,10 +238,10 @@ describe("#4 finalized orders stay editable and edits propagate to the pick list
     const loadedCheck = await request(app).get(`/api/orders/${order.body.id}`).set(auth(sales.token));
     expect(loadedCheck.body.status).toBe("LOADED");
 
-    // A LOADED order is picked but not yet dispatched/invoiced — the
-    // operational-flow addendum's post-pick adjustment scenario is exactly
-    // this state, so editing (which can trigger a put-back) must still be
-    // allowed here, not just on FINALIZED.
+    // A LOADED order is picked but not yet dispatched — the operational-flow
+    // addendum's post-pick adjustment scenario is exactly this state, so
+    // editing (which can trigger a put-back) must still be allowed here,
+    // not just on FINALIZED.
     const editAttempt = await request(app)
       .patch(`/api/orders/${order.body.id}`)
       .set(auth(sales.token))
@@ -249,20 +249,31 @@ describe("#4 finalized orders stay editable and edits propagate to the pick list
     expect(editAttempt.status).toBe(200);
     expect(editAttempt.body.buyerName).toBe("Edited while loaded");
 
-    // Once actually invoiced, it's locked — the Invoice Reference layer
-    // must never see a post-invoice edit.
+    // Logging an Invoice Reference alone does NOT lock the order — dispatch
+    // is the explicit, separate action that does (see the order-lifecycle
+    // addendum: invoicing can lag behind physical dispatch).
     await request(app)
       .post("/api/invoice-references")
       .set(auth(owner.token))
       .send({ tallyInvoiceNumber: `LOCK-TEST-${Date.now()}`, orderId: order.body.id, lines: [{ skuId: sku.id, qty: 5, price: 1 }] });
-    const invoicedCheck = await request(app).get(`/api/orders/${order.body.id}`).set(auth(sales.token));
-    expect(invoicedCheck.body.status).toBe("INVOICED");
+    const stillLoaded = await request(app).get(`/api/orders/${order.body.id}`).set(auth(sales.token));
+    expect(stillLoaded.body.status).toBe("LOADED");
+    const editWithInvoiceRef = await request(app)
+      .patch(`/api/orders/${order.body.id}`)
+      .set(auth(sales.token))
+      .send({ buyerName: "Still editable with an invoice reference logged" });
+    expect(editWithInvoiceRef.status).toBe(200);
 
-    const editAfterInvoice = await request(app)
+    // Once actually dispatched, it's locked.
+    const dispatch = await request(app).post(`/api/orders/${order.body.id}/dispatch`).set(auth(sales.token));
+    expect(dispatch.status).toBe(200);
+    expect(dispatch.body.status).toBe("COMPLETED");
+
+    const editAfterDispatch = await request(app)
       .patch(`/api/orders/${order.body.id}`)
       .set(auth(sales.token))
       .send({ lines: [{ id: lineId, qtyFinalized: 1 }] });
-    expect(editAfterInvoice.status).toBe(409);
+    expect(editAfterDispatch.status).toBe(409);
   });
 });
 

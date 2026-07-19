@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, ApiError, getToken } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -42,6 +42,10 @@ export default function OrderDetail() {
   const [invoiceRefs, setInvoiceRefs] = useState<InvoiceReference[]>([]);
   const [tallyNumber, setTallyNumber] = useState("");
   const [invoiceRefBusy, setInvoiceRefBusy] = useState(false);
+  // Focused after a successful dispatch when there's no Invoice Reference
+  // yet — makes attaching one "easy to do at the same time" as dispatch
+  // without hard-gating the two actions together.
+  const tallyInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -122,12 +126,20 @@ export default function OrderDetail() {
   const isDraft = order.status === "DRAFT";
   const isFinalized = order.status === "FINALIZED";
   const isLoaded = order.status === "LOADED";
+  const isCompleted = order.status === "COMPLETED";
   // Editable through LOADED — the server now allows editing a fully-picked,
-  // not-yet-invoiced order too (post-pick adjustments: reducing Final Qty
+  // not-yet-dispatched order too (post-pick adjustments: reducing Final Qty
   // below what's already been picked queues a Put-back task rather than
-  // being rejected). Locked only at INVOICED/CANCELLED, matching the
-  // server's own guard on PATCH /orders/:id.
+  // being rejected). Locked once dispatched (COMPLETED) or CANCELLED,
+  // matching the server's own guard on PATCH /orders/:id.
   const isEditable = isDraft || isFinalized || isLoaded;
+  // An active (non-cancelled) Invoice Reference — used both for the
+  // "Completed — invoice pending" indicator and to explain why Cancel is
+  // blocked, without the account needing pricing.manageInvoiceReference
+  // itself to understand why (invoiceRefs is empty, not omitted, for an
+  // account that lacks it — see load()'s own gate above).
+  const hasActiveInvoiceRef = invoiceRefs.some((r) => r.status !== "CANCELLED");
+  const canCancel = hasRole("OWNER") && (isDraft || isFinalized || isLoaded);
 
   // Left to throw — FinalQtyCell owns the Save button for this field and
   // shows its own per-field saving/success/error state (see #1: an onBlur
@@ -204,14 +216,48 @@ export default function OrderDetail() {
     }
   }
 
+  // Mark Dispatched: the explicit action that closes out a LOADED order —
+  // deliberately not tied to Invoice Reference creation (invoicing often
+  // lags behind physical dispatch). Nudges toward logging the Invoice
+  // Reference right after, without forcing it: if the account can create
+  // one and none exists yet, focus that field so it's the natural next
+  // step, but dispatch itself already succeeded either way.
+  async function handleDispatch() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.post(`/orders/${id}/dispatch`);
+      setNotice(
+        canManageInvoiceReference && !hasActiveInvoiceRef
+          ? "Order dispatched. Add the Invoice Reference below when it's ready."
+          : "Order dispatched."
+      );
+      await load();
+      if (canManageInvoiceReference && !hasActiveInvoiceRef) {
+        tallyInputRef.current?.focus();
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Dispatch failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleCancel() {
     if (!confirm("Cancel this order?")) return;
     setBusy(true);
+    setError(null);
     try {
       await api.post(`/orders/${id}/cancel`);
       load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Cancel failed");
+      if (err instanceof ApiError && err.status === 409 && Array.isArray(err.body?.invoiceReferences) && err.body.invoiceReferences.length > 0) {
+        const numbers = err.body.invoiceReferences.map((r: { tallyInvoiceNumber: string }) => r.tallyInvoiceNumber).join(", ");
+        setError(`${err.message} Active reference(s): ${numbers}.`);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Cancel failed");
+      }
     } finally {
       setBusy(false);
     }
@@ -365,7 +411,14 @@ export default function OrderDetail() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300">{order.status}</span>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+            {/* A dispatched order with no Invoice Reference yet is a normal,
+                expected in-between state (invoicing can lag behind physical
+                dispatch) — only annotated for a viewer who can actually see
+                invoice references, so it's never a misleading "pending" for
+                someone without visibility into whether one already exists. */}
+            {isCompleted && canManageInvoiceReference && !hasActiveInvoiceRef ? "COMPLETED — invoice pending" : order.status}
+          </span>
           {isDraft && canEdit && !editingHeader && (
             <button onClick={() => setEditingHeader(true)} className="text-xs font-medium text-slate-500 underline dark:text-slate-400">
               Edit details
@@ -428,7 +481,12 @@ export default function OrderDetail() {
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p>}
       {notice && <p className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-700 dark:bg-green-950 dark:text-green-300">{notice}</p>}
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      {/* overflow-x-auto, not overflow-hidden: on a narrow/mobile viewport
+          this table (SKU, Requested, Final qty, Picked, Available, Unit
+          price, remove) is wider than the screen — overflow-hidden would
+          silently clip the rightmost columns instead of letting the card
+          scroll horizontally to reach them. */}
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
             <tr>
@@ -518,8 +576,8 @@ export default function OrderDetail() {
         </table>
       </div>
 
-      {/* Deliberately outside the table's `overflow-hidden` wrapper above —
-          the combobox's results dropdown is absolutely positioned and would
+      {/* Deliberately outside the table's scrolling wrapper above — the
+          combobox's results dropdown is absolutely positioned and would
           get clipped by that ancestor's overflow instead of rendering on
           top of the page. */}
       {isEditable && canEdit && (
@@ -543,6 +601,17 @@ export default function OrderDetail() {
       {isDraft && canFinalize && (
         <button onClick={handleFinalize} disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-3 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
           {busy ? "Finalizing…" : "Finalize order & generate pick list"}
+        </button>
+      )}
+
+      {/* Mark Dispatched: closes out a LOADED order (fully picked, staged
+          on vehicle) — independent of Invoice Reference creation, see
+          handleDispatch above. Same permission as editing the order
+          post-finalize, since this is squarely an operational
+          order-lifecycle action, not a new capability of its own. */}
+      {isLoaded && canEdit && (
+        <button onClick={handleDispatch} disabled={busy} className="w-full rounded-lg bg-slate-900 px-4 py-3 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900">
+          {busy ? "Marking dispatched…" : "Mark Dispatched"}
         </button>
       )}
 
@@ -584,6 +653,7 @@ export default function OrderDetail() {
           onAdd={handleAddInvoiceReference}
           onCancel={handleCancelInvoiceRef}
           onAdjust={handleAdjustInvoiceRef}
+          inputRef={tallyInputRef}
         />
       )}
 
@@ -598,10 +668,23 @@ export default function OrderDetail() {
 
       <ActivityPanel entries={auditEntries} expanded={showAudit} onToggle={() => setShowAudit((v) => !v)} />
 
-      {hasRole("OWNER") && order.status !== "LOADED" && order.status !== "INVOICED" && order.status !== "CANCELLED" && (
-        <button onClick={handleCancel} disabled={busy} className="w-full rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 dark:border-red-800 dark:text-red-400">
-          Cancel order
-        </button>
+      {/* Reachable from DRAFT, FINALIZED, or LOADED — cancelling a LOADED
+          order queues a Put-back task for whatever was already picked (see
+          handleCancel / routes/orders.ts's reuse of the shared allocation
+          reconciler). Blocked server-side, with a clear reason, if an
+          active Invoice Reference exists — surfaced here before the click
+          too, not just after a 409. */}
+      {canCancel && (
+        <div className="space-y-1">
+          {hasActiveInvoiceRef && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              Cancel the active Invoice Reference above first — an order can't be cancelled while one is still active.
+            </p>
+          )}
+          <button onClick={handleCancel} disabled={busy} className="w-full rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 dark:border-red-800 dark:text-red-400">
+            Cancel order
+          </button>
+        </div>
       )}
     </div>
   );
@@ -883,6 +966,7 @@ function InvoiceReferenceSection({
   onAdd,
   onCancel,
   onAdjust,
+  inputRef,
 }: {
   invoiceRefs: InvoiceReference[];
   busy: boolean;
@@ -891,6 +975,7 @@ function InvoiceReferenceSection({
   onAdd: (e: React.FormEvent) => void;
   onCancel: (refId: string) => void;
   onAdjust: (refId: string, lineId: string, currentQty: number, currentPrice: number) => void;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
   return (
     <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -944,6 +1029,7 @@ function InvoiceReferenceSection({
 
       <form onSubmit={onAdd} className="flex gap-2 pt-1">
         <input
+          ref={inputRef}
           value={tallyNumber}
           disabled={busy}
           onChange={(e) => onTallyNumberChange(e.target.value)}

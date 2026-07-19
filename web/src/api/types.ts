@@ -112,7 +112,7 @@ export interface StockMovement {
   createdAt: string;
 }
 
-export type OrderStatus = "DRAFT" | "FINALIZED" | "LOADED" | "INVOICED" | "CANCELLED";
+export type OrderStatus = "DRAFT" | "FINALIZED" | "LOADED" | "COMPLETED" | "CANCELLED";
 
 export interface OrderLine {
   id: string;
@@ -153,6 +153,10 @@ export interface Order {
   createdAt: string;
   finalizedAt?: string | null;
   loadedAt?: string | null;
+  // Set by the explicit "Mark Dispatched" action (LOADED -> COMPLETED) —
+  // independent of Invoice Reference creation, which can happen before,
+  // during, or after dispatch.
+  completedAt?: string | null;
   lines: OrderLine[];
 }
 
@@ -362,4 +366,26 @@ export interface SkuBulkCommitResponse {
   updated: number;
   skipped: number;
   rows: SkuBulkCommitRowResult[];
+}
+
+// Opening Stock import (onboarding-only, Owner-only) — see
+// POST /opening-stock/preview and /commit.
+export interface OpeningStockRowResult {
+  rowNumber: number;
+  skuCode: string | null;
+  locationCode: string | null;
+  quantity: number | null;
+  action: "apply" | "error";
+  errors: string[];
+}
+
+export interface OpeningStockPreviewResponse {
+  rows: OpeningStockRowResult[];
+  summary: { toApply: number; errors: number };
+}
+
+export interface OpeningStockCommitResponse {
+  applied: number;
+  skipped: number;
+  rows: OpeningStockRowResult[];
 }

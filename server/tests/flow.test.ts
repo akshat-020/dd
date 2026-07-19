@@ -234,7 +234,7 @@ describe("order -> finalize -> pick -> invoice flow", () => {
 
   let invoiceRefId: string;
 
-  it("ACCOUNTANT can add an Invoice Reference, moving the order to INVOICED", async () => {
+  it("ACCOUNTANT can add an Invoice Reference — this alone does not change order status (dispatch is a separate, explicit action)", async () => {
     const res = await request(app)
       .post("/api/invoice-references")
       .set(auth(accountant.token))
@@ -243,7 +243,7 @@ describe("order -> finalize -> pick -> invoice flow", () => {
     invoiceRefId = res.body.id;
 
     const order = await request(app).get(`/api/orders/${orderId}`).set(auth(owner.token));
-    expect(order.body.status).toBe("INVOICED");
+    expect(order.body.status).toBe("LOADED");
   });
 
   it("WAREHOUSE cannot access invoice references", async () => {

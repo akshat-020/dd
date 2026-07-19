@@ -6,6 +6,7 @@ import { requireAuth, requirePermission, type AuthedRequest } from "../middlewar
 import { recordAudit } from "../lib/audit.js";
 import { hasAnyPermission, hasPermission } from "../lib/permissions.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
+import { cellToString, cellToNumber } from "../lib/csv.js";
 import type { Role } from "../lib/roles.js";
 
 export const skusRouter = Router();
@@ -83,21 +84,6 @@ const bulkRowSchema = z.object({
 });
 
 const bulkRequestSchema = z.object({ rows: z.array(bulkRowSchema).min(1) });
-
-function cellToString(v: unknown): string | undefined {
-  if (v == null) return undefined;
-  const s = String(v).trim();
-  return s === "" ? undefined : s;
-}
-
-// Returns undefined for a blank cell, NaN for a present-but-unparseable
-// cell (the caller distinguishes the two), or the parsed number otherwise.
-function cellToNumber(v: unknown): number | undefined {
-  const s = cellToString(v);
-  if (s === undefined) return undefined;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : NaN;
-}
 
 interface BulkRowResult {
   rowNumber: number; // 1-based, matching the data rows below the header

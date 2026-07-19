@@ -4,10 +4,23 @@
   color-scheme: light dark;
 }
 
-html,
+/* min-height, not height, on body/#root — a fixed `height: 100%` chain is
+   the standard root cause behind "mobile page can't scroll to reach
+   content below the fold": some engines resolve it against the *initial*
+   viewport (address bar visible) and don't grow it back out as page
+   content exceeds that height, effectively capping the page even though
+   overflow is visible. `html` alone stays `height: 100%` (well-defined
+   against the real viewport, needed so the min-height percentages below
+   have a definite reference) — min-height on its descendants means they
+   still fill at least the viewport for short pages, but are never capped
+   below their actual content height. */
+html {
+  height: 100%;
+}
+
 body,
 #root {
-  height: 100%;
+  min-height: 100%;
 }
 
 body {

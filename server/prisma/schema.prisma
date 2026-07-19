@@ -138,7 +138,7 @@ model SkuBatch {
   sku              Sku      @relation(fields: [skuId], references: [id])
   skuId            String
   batchCode        String
-  sourceType       String // PURCHASE | PRODUCTION
+  sourceType       String // PURCHASE | PRODUCTION | OPENING_STOCK
   receivedQuantity Int? // declared at inward-entry time; null for pre-existing/legacy batches
   supplierRef      String? // supplier's own PO/invoice/delivery number, distinct from our batchCode
   receivedDate     DateTime @default(now())
@@ -194,7 +194,7 @@ model StockMovement {
   batch             SkuBatch? @relation(fields: [batchId], references: [id])
   batchId           String?
   quantity          Int // signed delta: positive = in, negative = out
-  type              String // INBOUND | OUTBOUND | TRANSFER_IN | TRANSFER_OUT | ADJUSTMENT
+  type              String // INBOUND | OUTBOUND | TRANSFER_IN | TRANSFER_OUT | ADJUSTMENT | OPENING_STOCK
   reason            String?
   refOrderId        String?
   refInvoiceRefId   String?
@@ -209,13 +209,18 @@ model Order {
   orderNumber         String    @unique
   buyerName           String
   buyerContact        String?
-  status              String    @default("DRAFT") // DRAFT | FINALIZED | LOADED | INVOICED | CANCELLED
+  status              String    @default("DRAFT") // DRAFT | FINALIZED | LOADED | COMPLETED | CANCELLED
   vehicleCapacityNote String?
   createdBy           User      @relation("OrderCreatedBy", fields: [createdById], references: [id])
   createdById         String
   createdAt           DateTime  @default(now())
   finalizedAt         DateTime?
   loadedAt            DateTime?
+  // Set by the explicit "Mark Dispatched" action (LOADED -> COMPLETED) —
+  // deliberately independent of whether an Invoice Reference exists yet
+  // (invoicing can lag behind physical dispatch). Never set by Invoice
+  // Reference creation itself; see routes/invoiceReferences.ts.
+  completedAt         DateTime?
 
   lines             OrderLine[]
   pickListItems     PickListItem[]

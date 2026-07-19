@@ -80,7 +80,7 @@ reportsRouter.get("/stock-on-hand", requireRole("OWNER", "ACCOUNTANT", "SALES"),
 // Order fulfillment turnaround: received -> loaded -> invoiced.
 reportsRouter.get("/fulfillment-turnaround", async (_req, res) => {
   const orders = await prisma.order.findMany({
-    where: { status: { in: ["LOADED", "INVOICED"] } },
+    where: { status: { in: ["LOADED", "COMPLETED"] } },
     include: { invoiceReferences: { where: { status: { not: "CANCELLED" } }, orderBy: { createdAt: "asc" }, take: 1 } },
     orderBy: { createdAt: "desc" },
     take: 200,

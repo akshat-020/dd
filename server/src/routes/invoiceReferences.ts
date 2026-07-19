@@ -98,10 +98,11 @@ invoiceReferencesRouter.post("/", async (req: AuthedRequest, res) => {
     include: { lines: true },
   });
 
-  if (order.status === "LOADED") {
-    await prisma.order.update({ where: { id: order.id }, data: { status: "INVOICED" } });
-  }
-
+  // Deliberately does not touch order.status — dispatch (LOADED ->
+  // COMPLETED) is its own explicit action (POST /orders/:id/dispatch), not
+  // implied by invoicing. Invoicing frequently lags behind physical
+  // dispatch in practice; an order can be COMPLETED with no Invoice
+  // Reference yet, or (as here) get one logged while still LOADED.
   await recordAudit({ userId: req.user!.id, action: "CREATE", entityType: "InvoiceReference", entityId: ref.id, after: ref });
   res.status(201).json({ ...ref, lines: serializeLines(ref.lines) });
 });

@@ -65,6 +65,8 @@ function describeAuditEntry(entry: { action: string; entityType: string; after: 
       return "Order edited";
     case "Order:FINALIZE":
       return "Order finalized — pick list generated";
+    case "Order:DISPATCH":
+      return "Order dispatched";
     case "Order:CANCEL":
       return "Order cancelled";
     case "Order:SET_PRICING":
@@ -189,7 +191,7 @@ ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: A
   const canViewFullHistory = await hasPermission(user, "orders.viewFullHistory");
   if (!hasExplicitFilter || !canViewFullHistory) {
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-    filters.push({ OR: [{ createdAt: { gte: threeDaysAgo } }, { status: { notIn: ["LOADED", "INVOICED", "CANCELLED"] } }] });
+    filters.push({ OR: [{ createdAt: { gte: threeDaysAgo } }, { status: { notIn: ["LOADED", "COMPLETED", "CANCELLED"] } }] });
   }
 
   const orders = await prisma.order.findMany({
@@ -385,16 +387,16 @@ const updateLinesSchema = z.object({
 //
 // Editable while DRAFT (no PickListItems exist yet, so this is a plain
 // field update), FINALIZED, or LOADED (up to the point it's actually
-// invoiced — INVOICED/CANCELLED are locked). LOADED is deliberately still
-// editable, not locked the moment picking completes: the operational-flow
-// addendum's post-pick adjustment scenario is exactly "picked, not yet
-// dispatched" — i.e. LOADED — and reducing a line there has to be allowed
-// so the put-back path (reconcileOrderLineAllocation) can trigger. Editing
-// a FINALIZED or LOADED order's quantities reconciles the pick list
-// allocation immediately, so nothing about location assignments (or, for
-// a reduction below what's picked, the resulting put-back task) goes
-// stale; once an order is actually INVOICED it's locked, so the Invoice
-// Reference layer can never see a post-invoice edit in the first place.
+// dispatched — COMPLETED/CANCELLED are locked). LOADED is deliberately
+// still editable, not locked the moment picking completes: the
+// operational-flow addendum's post-pick adjustment scenario is exactly
+// "picked, not yet dispatched" — i.e. LOADED — and reducing a line there
+// has to be allowed so the put-back path (reconcileOrderLineAllocation)
+// can trigger. Editing a FINALIZED or LOADED order's quantities reconciles
+// the pick list allocation immediately, so nothing about location
+// assignments (or, for a reduction below what's picked, the resulting
+// put-back task) goes stale; once an order is actually dispatched
+// (COMPLETED) it's locked — physically gone, nothing left to reconcile.
 ordersRouter.patch("/:id", requirePermission("orders.editFinalized"), async (req: AuthedRequest, res) => {
   const parsed = updateLinesSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -584,13 +586,68 @@ ordersRouter.post("/:id/finalize", requirePermission("orders.createDraft"), asyn
   res.json(after);
 });
 
-ordersRouter.post("/:id/cancel", requireRole("OWNER"), async (req: AuthedRequest, res) => {
+// Mark Dispatched: the explicit action that closes out a LOADED order —
+// deliberately not tied to Invoice Reference creation, since invoicing
+// often lags behind physical dispatch in practice (see the order-lifecycle
+// addendum). A COMPLETED order with no active Invoice Reference yet is a
+// perfectly normal, expected in-between state ("Completed — invoice
+// pending"), not an error condition — the client renders that from
+// invoiceReferences, nothing server-side needs to track it separately.
+ordersRouter.post("/:id/dispatch", requirePermission("orders.editFinalized"), async (req: AuthedRequest, res) => {
   const order = await prisma.order.findUnique({ where: { id: req.params.id } });
-  if (!order) return res.status(404).json({ error: "Order not found" });
-  if (order.status === "LOADED" || order.status === "INVOICED") {
-    return res.status(409).json({ error: "Cannot cancel an order that has already been loaded or invoiced" });
+  if (!order || !(await canAccessOrder(req.user!, order))) return res.status(404).json({ error: "Order not found" });
+  if (order.status !== "LOADED") {
+    return res.status(409).json({ error: "Only a loaded order can be marked dispatched" });
   }
-  const updated = await prisma.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+  const updated = await prisma.order.update({ where: { id: order.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+  await recordAudit({ userId: req.user!.id, action: "DISPATCH", entityType: "Order", entityId: order.id, before: order, after: updated });
+  const after = await serializeOrder(order.id, await canSeePrice(req.user!));
+  res.json(after);
+});
+
+ordersRouter.post("/:id/cancel", requireRole("OWNER"), async (req: AuthedRequest, res) => {
+  const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { lines: true } });
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+    return res.status(409).json({ error: `Cannot cancel an order that is already ${order.status.toLowerCase()}` });
+  }
+
+  // A cancelled order must never leave a dangling active Invoice Reference
+  // pointing at it — that would break the reconciliation trail the whole
+  // system is built around. Block rather than silently cancel the
+  // reference too: whether goods were actually returned is a distinct,
+  // consequential decision that belongs to the existing Cancel Invoice
+  // Reference flow (routes/invoiceReferences.ts), not an assumption made
+  // as a side effect here.
+  const activeInvoiceRefs = await prisma.invoiceReference.findMany({
+    where: { orderId: order.id, status: { not: "CANCELLED" } },
+    select: { id: true, tallyInvoiceNumber: true },
+  });
+  if (activeInvoiceRefs.length > 0) {
+    return res.status(409).json({
+      error: "Cannot cancel an order with an active Invoice Reference — cancel the Invoice Reference first.",
+      invoiceReferences: activeInvoiceRefs,
+    });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Same shared reconciler finalize and PATCH /orders/:id both already
+    // use — dropping every line to zero releases any not-yet-picked
+    // allocation and queues a PutBackTask per already-picked/loaded
+    // quantity, so cancellation needs no separate stock-adjustment code
+    // path (the exact class of bug already fixed once for per-line
+    // allocation isn't worth risking a second implementation of). For a
+    // DRAFT order this is a no-op — there's nothing to reconcile since no
+    // PickListItems exist yet; the reservation itself is just the soft
+    // getCommittedQuantities count on a DRAFT order, which disappears the
+    // moment status flips away from DRAFT below.
+    for (const line of order.lines) {
+      await reconcileOrderLineAllocation(tx, { orderId: order.id, orderLineId: line.id, skuId: line.skuId, newQty: 0 });
+    }
+    await tx.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+  });
+
+  const updated = await prisma.order.findUnique({ where: { id: order.id } });
   await recordAudit({ userId: req.user!.id, action: "CANCEL", entityType: "Order", entityId: order.id, before: order, after: updated });
   res.json(updated);
 });
