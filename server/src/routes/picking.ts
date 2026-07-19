@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
@@ -111,6 +112,110 @@ const confirmSchema = z.object({
   boxesOpened: z.number().int().min(0).optional(),
 });
 
+type PickListItemForClose = Prisma.PickListItemGetPayload<{ include: { sku: true; location: true } }>;
+
+// Shared close-out for a pick list item, whatever quantity actually got
+// picked (including 0 — see the /skip route below, which is this same
+// mechanism triggered from a different entry point rather than a separate
+// code path, per the Skip requirement). A shortfall (qtyToPick - quantity
+// > 0) always spins off a follow-up PENDING row for the remainder — the
+// same row shape whether it came from a partial pick or a full skip — and
+// that follow-up is what /reports/shortfalls surfaces to Sales/Owner.
+//
+// Follow-up rows are deliberately excluded from the "is this order fully
+// loaded" check below: a shortfall/skip on one line shouldn't hold up
+// dispatch for lines that picked clean. The follow-up stays open and
+// pickable (by anyone, any time — including after the order reaches
+// LOADED) rather than being a dead end.
+async function closePickItem(
+  tx: Prisma.TransactionClient,
+  item: PickListItemForClose,
+  params: {
+    quantity: number;
+    unit?: string;
+    unitQty?: number;
+    boxesOpened?: number;
+    userId: string;
+    isSkipped: boolean;
+    skipReason?: string;
+  }
+): Promise<{ shortfall: number; orderId: string }> {
+  if (params.quantity > 0) {
+    await applyStockMovement(tx, {
+      skuId: item.skuId,
+      locationId: item.locationId,
+      batchId: item.batchId,
+      quantity: -params.quantity,
+      type: "OUTBOUND",
+      reason: "Order pick",
+      refOrderId: item.orderId,
+      userId: params.userId,
+    });
+  }
+
+  await tx.pickListItem.update({
+    where: { id: item.id },
+    data: {
+      qtyPicked: params.quantity,
+      status: "PICKED",
+      pickedById: params.userId,
+      pickedAt: new Date(),
+      pickedUnit: params.unit ?? null,
+      pickedUnitQty: params.unitQty ?? null,
+      boxesOpened: params.boxesOpened ?? 0,
+      isSkipped: params.isSkipped,
+      ...(params.isSkipped ? { note: `Issue reported — ${params.skipReason}` } : {}),
+    },
+  });
+
+  // item.orderLineId directly identifies the line this pick belongs to —
+  // looking it up by (orderId, skuId) instead would credit the wrong
+  // line's qtyPicked whenever the same SKU appears on more than one line
+  // of this order. Legacy rows with no orderLineId (pre-dating this field)
+  // fall back to the old lookup rather than crediting nothing.
+  if (params.quantity > 0) {
+    const orderLine = item.orderLineId
+      ? await tx.orderLine.findUnique({ where: { id: item.orderLineId } })
+      : await tx.orderLine.findFirst({ where: { orderId: item.orderId, skuId: item.skuId } });
+    if (orderLine) {
+      await tx.orderLine.update({ where: { id: orderLine.id }, data: { qtyPicked: { increment: params.quantity } } });
+    }
+  }
+
+  const shortfall = item.qtyToPick - params.quantity;
+  if (shortfall > 0) {
+    const maxSequence = await tx.pickListItem.aggregate({ where: { orderId: item.orderId }, _max: { sequence: true } });
+    await tx.pickListItem.create({
+      data: {
+        orderId: item.orderId,
+        orderLineId: item.orderLineId,
+        skuId: item.skuId,
+        locationId: item.locationId,
+        batchId: item.batchId,
+        sequence: (maxSequence._max.sequence ?? item.sequence) + 1,
+        qtyToPick: shortfall,
+        status: "PENDING",
+        isShortfallFollowup: true,
+        note: params.isSkipped
+          ? `Shortfall follow-up — skipped: ${params.skipReason}`
+          : `Shortfall follow-up — only ${params.quantity} of ${item.qtyToPick} ${item.sku.unit} found at ${item.location.code}`,
+      },
+    });
+  }
+
+  const remaining = await tx.pickListItem.count({
+    where: { orderId: item.orderId, status: { not: "PICKED" }, isShortfallFollowup: false },
+  });
+  if (remaining === 0) {
+    const order = await tx.order.findUnique({ where: { id: item.orderId }, select: { status: true } });
+    if (order?.status === "FINALIZED") {
+      await tx.order.update({ where: { id: item.orderId }, data: { status: "LOADED", loadedAt: new Date() } });
+    }
+  }
+
+  return { shortfall, orderId: item.orderId };
+}
+
 pickingRouter.post("/items/:itemId/confirm", requirePermission("inventory.scanPutaway"), async (req: AuthedRequest, res) => {
   const parsed = confirmSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
@@ -125,75 +230,17 @@ pickingRouter.post("/items/:itemId/confirm", requirePermission("inventory.scanPu
     return res.status(400).json({ error: `Cannot pick more than the ${item.qtyToPick} allocated for this item` });
   }
 
-  // A partial pick (picked less than qtyToPick) closes *this* task honestly
-  // — qtyToPick/qtyPicked stay as "planned vs. actually found here" — but
-  // must never silently mark the order as fully picked. The shortfall gets
-  // its own follow-up PENDING row so it stays visible in the pick list
-  // (and therefore keeps the order out of LOADED) until it's resolved.
-  const shortfall = item.qtyToPick - parsed.data.quantity;
-
   try {
-    const orderId = await prisma.$transaction(async (tx) => {
-      await applyStockMovement(tx, {
-        skuId: item.skuId,
-        locationId: item.locationId,
-        batchId: item.batchId,
-        quantity: -parsed.data.quantity,
-        type: "OUTBOUND",
-        reason: "Order pick",
-        refOrderId: item.orderId,
+    const { shortfall, orderId } = await prisma.$transaction((tx) =>
+      closePickItem(tx, item, {
+        quantity: parsed.data.quantity,
+        unit: parsed.data.unit,
+        unitQty: parsed.data.unitQty,
+        boxesOpened: parsed.data.boxesOpened,
         userId: req.user!.id,
-      });
-      await tx.pickListItem.update({
-        where: { id: item.id },
-        data: {
-          qtyPicked: parsed.data.quantity,
-          status: "PICKED",
-          pickedById: req.user!.id,
-          pickedAt: new Date(),
-          pickedUnit: parsed.data.unit ?? null,
-          pickedUnitQty: parsed.data.unitQty ?? null,
-          boxesOpened: parsed.data.boxesOpened ?? 0,
-        },
-      });
-
-      // item.orderLineId directly identifies the line this pick belongs to
-      // — looking it up by (orderId, skuId) instead would credit the wrong
-      // line's qtyPicked whenever the same SKU appears on more than one
-      // line of this order. Legacy rows with no orderLineId (pre-dating
-      // this field) fall back to the old lookup rather than crediting
-      // nothing.
-      const orderLine = item.orderLineId
-        ? await tx.orderLine.findUnique({ where: { id: item.orderLineId } })
-        : await tx.orderLine.findFirst({ where: { orderId: item.orderId, skuId: item.skuId } });
-      if (orderLine) {
-        await tx.orderLine.update({ where: { id: orderLine.id }, data: { qtyPicked: { increment: parsed.data.quantity } } });
-      }
-
-      if (shortfall > 0) {
-        const maxSequence = await tx.pickListItem.aggregate({ where: { orderId: item.orderId }, _max: { sequence: true } });
-        await tx.pickListItem.create({
-          data: {
-            orderId: item.orderId,
-            orderLineId: item.orderLineId,
-            skuId: item.skuId,
-            locationId: item.locationId,
-            batchId: item.batchId,
-            sequence: (maxSequence._max.sequence ?? item.sequence) + 1,
-            qtyToPick: shortfall,
-            status: "PENDING",
-            isShortfallFollowup: true,
-            note: `Shortfall follow-up — only ${parsed.data.quantity} of ${item.qtyToPick} ${item.sku.unit} found at ${item.location.code}`,
-          },
-        });
-      }
-
-      const remaining = await tx.pickListItem.count({ where: { orderId: item.orderId, status: { not: "PICKED" } } });
-      if (remaining === 0) {
-        await tx.order.update({ where: { id: item.orderId }, data: { status: "LOADED", loadedAt: new Date() } });
-      }
-      return item.orderId;
-    });
+        isSkipped: false,
+      })
+    );
 
     if (shortfall > 0) {
       await recordAudit({
@@ -221,4 +268,49 @@ pickingRouter.post("/items/:itemId/confirm", requirePermission("inventory.scanPu
     }
     throw err;
   }
+});
+
+const skipSchema = z.object({ reason: z.string().min(1).max(200) });
+
+// Lets a picker move past an item they can't complete right now (out of
+// stock, damaged, wrong quantity on the shelf, ...) without getting stuck —
+// available at any stage before PICKED, not just from the very first
+// "scan location" step, since the blocker can surface at any point in the
+// scan/confirm sequence. Functionally a 0-of-N pick for this line (see
+// closePickItem): it always leaves a follow-up task behind for the full
+// quantity, so the picker (or anyone else) can come back to it later —
+// this row itself is done, but the shortfall it created is not.
+pickingRouter.post("/items/:itemId/skip", requirePermission("inventory.scanPutaway"), async (req: AuthedRequest, res) => {
+  const parsed = skipSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
+
+  const item = await prisma.pickListItem.findUnique({ where: { id: req.params.itemId }, include: { sku: true, location: true } });
+  if (!item) return res.status(404).json({ error: "Pick list item not found" });
+  if (item.status === "PICKED") {
+    return res.status(409).json({
+      error: item.isSkipped ? "This item was already skipped — see its follow-up task in the pick list" : "Item already picked",
+    });
+  }
+
+  const { orderId } = await prisma.$transaction((tx) =>
+    closePickItem(tx, item, { quantity: 0, userId: req.user!.id, isSkipped: true, skipReason: parsed.data.reason })
+  );
+
+  await recordAudit({
+    userId: req.user!.id,
+    action: "PICK_SKIP",
+    entityType: "PickListItem",
+    entityId: item.id,
+    after: { orderId, skuId: item.skuId, skuCode: item.sku.code, qty: item.qtyToPick, reason: parsed.data.reason },
+  });
+  await recordAudit({
+    userId: req.user!.id,
+    action: "PICK_SHORTFALL",
+    entityType: "PickListItem",
+    entityId: item.id,
+    after: { orderId, skuId: item.skuId, skuCode: item.sku.code, requested: item.qtyToPick, picked: 0, shortfall: item.qtyToPick },
+  });
+
+  const updated = await prisma.pickListItem.findUnique({ where: { id: item.id } });
+  res.json(updated);
 });

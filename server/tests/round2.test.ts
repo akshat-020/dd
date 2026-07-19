@@ -57,7 +57,7 @@ describe("#6 Requested is locked; Final Qty is the one editable quantity", () =>
 });
 
 describe("#3 partial pick creates a shortfall follow-up and notifies (in-app)", () => {
-  it("picking less than allocated keeps the order out of LOADED and generates a follow-up task", async () => {
+  it("picking less than allocated still lets the order reach LOADED, with the shortfall tracked as an open follow-up task", async () => {
     const { sku, loc } = await skuWithStock(20);
     const order = await request(app)
       .post("/api/orders")
@@ -75,8 +75,11 @@ describe("#3 partial pick creates a shortfall follow-up and notifies (in-app)", 
     expect(confirmRes.body.status).toBe("PICKED");
     expect(confirmRes.body.qtyPicked).toBe(7);
 
+    // A shortfall on the only line no longer holds the whole order hostage
+    // — it's tracked as a follow-up task (below) and surfaced to Sales/
+    // Owner, but the order itself is free to move on to LOADED.
     const orderAfter = await request(app).get(`/api/orders/${order.body.id}`).set(auth(sales.token));
-    expect(orderAfter.body.status).toBe("FINALIZED"); // not LOADED — shortfall still outstanding
+    expect(orderAfter.body.status).toBe("LOADED");
 
     const pickListAfter = await request(app).get(`/api/picking/orders/${order.body.id}`).set(auth(warehouse.token));
     expect(pickListAfter.body).toHaveLength(2);
@@ -91,7 +94,8 @@ describe("#3 partial pick creates a shortfall follow-up and notifies (in-app)", 
     expect(entry).toBeTruthy();
     expect(entry.shortfallQty).toBe(3);
 
-    // Finishing the follow-up task resolves it and completes the order.
+    // Finishing the follow-up task later (order already LOADED) resolves
+    // it without disturbing the order's status.
     const finish = await pickThrough(followup.id, loc.code, sku.code, 3);
     expect(finish.status).toBe(200);
     const orderFinal = await request(app).get(`/api/orders/${order.body.id}`).set(auth(sales.token));

@@ -27,6 +27,10 @@ export default function PickingSession() {
   const [online, setOnline] = useState(navigator.onLine);
   const [pending, setPending] = useState(0);
   const [busy, setBusy] = useState(false);
+  // Skip / report-issue panel — reset whenever the current item changes so
+  // it doesn't stay open across items.
+  const [skipping, setSkipping] = useState(false);
+  const [skipReason, setSkipReason] = useState("");
 
   const refreshPending = useCallback(() => {
     pendingCount().then(setPending);
@@ -79,6 +83,8 @@ export default function PickingSession() {
   useEffect(() => {
     setPickUnit(currentItem?.sku.unit ?? "");
     setBoxesOpened("");
+    setSkipping(false);
+    setSkipReason("");
   }, [currentItem?.id, currentItem?.sku.unit]);
 
   function updateLocal(itemId: string, patch: Partial<PickListItem>) {
@@ -196,7 +202,53 @@ export default function PickingSession() {
     }
   }
 
+  // Lets the picker move past an item they can't complete right now — out
+  // of stock, damaged, wrong quantity found — instead of getting stuck.
+  // Available whenever the item isn't PICKED yet, not just from the very
+  // first "scan location" step, since the blocker can surface at any point.
+  async function handleSkip(reason: string) {
+    if (!currentItem || busy) return;
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      setError("Enter a reason before skipping");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    const payload = { reason: trimmed };
+    try {
+      if (navigator.onLine) {
+        await api.post(`/picking/items/${currentItem.id}/skip`, payload);
+        setSkipping(false);
+        setSkipReason("");
+        await loadFromServer();
+      } else {
+        setSkipping(false);
+        setSkipReason("");
+        updateLocal(currentItem.id, { status: "PICKED", qtyPicked: 0, isSkipped: true, note: `Issue reported — ${trimmed}` });
+        await enqueueAction({
+          type: "skip-pick",
+          path: `/picking/items/${currentItem.id}/skip`,
+          payload,
+          orderId,
+          itemId: currentItem.id,
+        });
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Skip failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const allPicked = items.length > 0 && items.every((i) => i.status === "PICKED");
+  // Mirrors the server's own LOADED gate (routes/picking.ts closePickItem):
+  // an order can move on once every *primary* line is resolved — picked or
+  // skipped — even if a shortfall/skip follow-up it spun off is still
+  // outstanding. Lets this screen reflect "the order already loaded" even
+  // while a follow-up task remains open below.
+  const readyToLoad = items.length > 0 && items.filter((i) => !i.isShortfallFollowup).every((i) => i.status === "PICKED");
+  const outstandingFollowups = items.filter((i) => i.isShortfallFollowup && i.status !== "PICKED").length;
 
   return (
     <div className="mx-auto max-w-md space-y-4">
@@ -218,6 +270,13 @@ export default function PickingSession() {
       {allPicked && (
         <p className="rounded-lg bg-green-50 px-4 py-3 text-center text-sm font-medium text-green-700 dark:bg-green-950 dark:text-green-300">
           All items picked. {pending > 0 ? "Waiting to sync…" : "Order loaded."}
+        </p>
+      )}
+
+      {!allPicked && readyToLoad && (
+        <p className="rounded-lg bg-green-50 px-4 py-3 text-center text-sm font-medium text-green-700 dark:bg-green-950 dark:text-green-300">
+          Order ready to load. {outstandingFollowups} follow-up item{outstandingFollowups === 1 ? "" : "s"} still open below — pick them now
+          or come back to them later.
         </p>
       )}
 
@@ -277,6 +336,60 @@ export default function PickingSession() {
               onConfirm={handleConfirm}
             />
           )}
+
+          {!skipping && (
+            <button
+              onClick={() => setSkipping(true)}
+              disabled={busy}
+              className="mt-3 w-full rounded-lg px-4 py-2 text-sm font-medium text-red-600 underline-offset-2 hover:underline disabled:opacity-50 dark:text-red-400"
+            >
+              Skip / report issue
+            </button>
+          )}
+
+          {skipping && (
+            <div className="mt-3 space-y-2 rounded-xl border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950">
+              <div className="text-xs font-medium text-red-700 dark:text-red-300">Can't complete this item right now?</div>
+              <div className="flex flex-wrap gap-2">
+                {["Out of stock", "Damaged", "Wrong quantity found"].map((reason) => (
+                  <button
+                    key={reason}
+                    onClick={() => handleSkip(reason)}
+                    disabled={busy}
+                    className="rounded-full border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 disabled:opacity-50 dark:border-red-800 dark:bg-slate-900 dark:text-red-300"
+                  >
+                    {reason}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={skipReason}
+                  onChange={(e) => setSkipReason(e.target.value)}
+                  placeholder="Other reason…"
+                  disabled={busy}
+                  className="flex-1 rounded-lg border border-red-300 px-3 py-2 text-sm outline-none disabled:opacity-50 dark:border-red-800 dark:bg-slate-900 dark:text-slate-100"
+                />
+                <button
+                  onClick={() => handleSkip(skipReason)}
+                  disabled={busy || !skipReason.trim()}
+                  className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  Skip
+                </button>
+              </div>
+              <button
+                onClick={() => {
+                  setSkipping(false);
+                  setSkipReason("");
+                }}
+                disabled={busy}
+                className="text-xs text-slate-500 underline-offset-2 hover:underline dark:text-slate-400"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -293,10 +406,26 @@ export default function PickingSession() {
           .sort((a, b) => a.sequence - b.sequence)
           .map((i) => (
             <li key={i.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm dark:bg-slate-900">
-              <span className={i.status === "PICKED" ? "text-slate-400 line-through" : "text-slate-700 dark:text-slate-300"}>
+              <span
+                className={
+                  i.isSkipped
+                    ? "text-red-500 dark:text-red-400"
+                    : i.status === "PICKED"
+                    ? "text-slate-400 line-through"
+                    : "text-slate-700 dark:text-slate-300"
+                }
+              >
                 {i.location.code} · {i.sku.code} × {i.qtyToPick}
               </span>
-              <span className="text-xs text-slate-400">{i.status}</span>
+              {/* A skipped row is clearly flagged instead of reading as an
+                  indistinguishable "Pending" — see the Skip requirement. */}
+              {i.isSkipped ? (
+                <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+                  {i.note ?? "Issue reported"}
+                </span>
+              ) : (
+                <span className="text-xs text-slate-400">{i.status}</span>
+              )}
             </li>
           ))}
       </ul>

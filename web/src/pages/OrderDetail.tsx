@@ -631,8 +631,15 @@ export default function OrderDetail() {
                       shortfall follow-up
                     </span>
                   )}
+                  {item.isSkipped && (
+                    <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+                      issue reported
+                    </span>
+                  )}
                 </span>
-                <span className={item.status === "PICKED" ? "text-green-600 dark:text-green-400" : "text-slate-400"}>{item.status}</span>
+                <span className={item.isSkipped ? "text-red-500 dark:text-red-400" : item.status === "PICKED" ? "text-green-600 dark:text-green-400" : "text-slate-400"}>
+                  {item.isSkipped ? "SKIPPED" : item.status}
+                </span>
               </li>
             ))}
           </ul>

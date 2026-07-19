@@ -191,6 +191,11 @@ export interface PickListItem {
   pickedBy?: { id: string; name: string } | null;
   pickedAt?: string | null;
   isShortfallFollowup?: boolean;
+  // Set when this row was closed via "Skip / report issue" rather than an
+  // actual pick — status is still PICKED (qtyPicked 0), so the UI needs
+  // this to show "Issue reported" instead of a false "picked 0". See
+  // schema.prisma's PickListItem.isSkipped comment.
+  isSkipped?: boolean;
   note?: string | null;
   sku: Sku;
   location: Location;

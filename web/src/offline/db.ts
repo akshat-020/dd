@@ -1,6 +1,6 @@
 import Dexie, { type Table } from "dexie";
 
-export type QueuedActionType = "scan-location" | "scan-sku" | "confirm-pick" | "putaway";
+export type QueuedActionType = "scan-location" | "scan-sku" | "confirm-pick" | "skip-pick" | "putaway";
 
 export interface QueuedAction {
   id?: number;

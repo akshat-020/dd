@@ -324,6 +324,17 @@ model PickListItem {
   pickedUnitQty Int?
   boxesOpened   Int     @default(0)
 
+  // Set when this row was closed via the picker's "Skip / report issue"
+  // action (POST /picking/items/:itemId/skip) rather than an actual scan +
+  // confirm. Under the hood a skip is just a 0-of-N pick — same PICKED
+  // status, same qtyToPick/shortfall follow-up mechanism as a partial pick
+  // (see picking.ts) — so every other query (getCommittedQuantities,
+  // reconcileOrderLineAllocation, the shortfalls report) treats a skipped
+  // row identically to a normal PICKED one without needing to know about
+  // this flag. It exists purely so the picking UI can show "Issue reported"
+  // instead of a false "picked 0" for this row.
+  isSkipped Boolean @default(false)
+
   putBackTasks PutBackTask[]
 }
 

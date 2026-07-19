@@ -75,6 +75,8 @@ function describeAuditEntry(entry: { action: string; entityType: string; after: 
       return after?.boxesOpened > 0 ? "Item picked (box opened to fulfill quantity)" : "Item picked";
     case "PickListItem:PICK_SHORTFALL":
       return `Partial pick — shortfall of ${after?.shortfall ?? "?"} follow-up created`;
+    case "PickListItem:PICK_SKIP":
+      return `Item skipped — issue reported (${after?.reason ?? "unspecified"})`;
     case "InvoiceReference:CREATE":
       return "Invoice reference logged";
     case "InvoiceReference:CANCEL":
@@ -184,14 +186,30 @@ ordersRouter.get("/", requireRole("OWNER", "ACCOUNTANT", "SALES"), async (req: A
   // Default view (no explicit filter): recent orders (last 3 days) plus
   // anything still active regardless of age — an old order still awaiting
   // dispatch shouldn't disappear just because it's older than the recency
-  // window. Whoever lacks "view full order history" is held to this window
-  // as a hard ceiling even WITH an explicit filter — a search/date-range
+  // window. LOADED means "picked and staged, not yet dispatched" — still
+  // very much awaiting action — so it belongs in that "always visible"
+  // bucket alongside DRAFT/FINALIZED, not lumped in with the concluded
+  // COMPLETED/CANCELLED statuses (a bug: it used to be, which meant an
+  // order created >3 days ago could vanish from the default view the
+  // moment it was fully picked — before anyone even got the chance to
+  // dispatch it). A just-COMPLETED order also gets a grace window off its
+  // own completedAt, not just createdAt, so marking dispatch doesn't make
+  // an old order disappear out from under whoever just acted on it — it
+  // still eventually ages out of the default view like everything else.
+  // Whoever lacks "view full order history" is held to this window as a
+  // hard ceiling even WITH an explicit filter — a search/date-range
   // narrows within what's visible, it doesn't unlock reaching further back.
   const hasExplicitFilter = !!statusFilter || !!searchTerm || !!fromDate || !!toDate;
   const canViewFullHistory = await hasPermission(user, "orders.viewFullHistory");
   if (!hasExplicitFilter || !canViewFullHistory) {
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-    filters.push({ OR: [{ createdAt: { gte: threeDaysAgo } }, { status: { notIn: ["LOADED", "COMPLETED", "CANCELLED"] } }] });
+    filters.push({
+      OR: [
+        { createdAt: { gte: threeDaysAgo } },
+        { status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        { completedAt: { gte: threeDaysAgo } },
+      ],
+    });
   }
 
   const orders = await prisma.order.findMany({

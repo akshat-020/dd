@@ -136,38 +136,81 @@ proformaInvoicesRouter.get("/:id/pdf", async (req, res) => {
   if (pi.order.buyerContact) doc.text(`Contact: ${pi.order.buyerContact}`);
   doc.moveDown();
 
-  const tableTop = doc.y;
-  const cols = { name: 50, qty: 260, unit: 320, price: 380, amount: 460 };
-  doc.font("Helvetica-Bold");
-  doc.text("Item", cols.name, tableTop);
-  doc.text("Qty", cols.qty, tableTop);
-  doc.text("Unit", cols.unit, tableTop);
-  doc.text("Price", cols.price, tableTop);
-  doc.text("Amount", cols.amount, tableTop);
-  doc.font("Helvetica");
-  doc.moveDown(0.5);
-  doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
-  doc.moveDown(0.3);
+  // --- Item table ---------------------------------------------------
+  // Dark navy header (bold/uppercase/white, letter-spaced), alternating
+  // row shading, right-aligned numerals for Qty/Rate/Amount, bold item
+  // names, thin row separators distinct from the header itself.
+  const TABLE_X = 50;
+  const TABLE_WIDTH = 495; // page width (595) - 2x50 margin
+  const NAVY = "#1a1f2b";
+  const ROW_SHADE = "#f8f9fb";
+  const BORDER = "#e2e4e9";
+  const CELL_PAD_X = 10;
+  const CELL_PAD_Y = 7;
+  const ROW_FONT_SIZE = 10;
+
+  const colName = { x: TABLE_X + CELL_PAD_X, width: 200 };
+  const colQty = { x: 270, width: 50 };
+  const colUnit = { x: 325, width: 55 };
+  const colRate = { x: 385, width: 75 };
+  const colAmount = { x: 465, width: TABLE_X + TABLE_WIDTH - CELL_PAD_X - 465 };
+
+  let tableY = doc.y;
+  const headerHeight = ROW_FONT_SIZE + CELL_PAD_Y * 2;
+  doc.rect(TABLE_X, tableY, TABLE_WIDTH, headerHeight).fill(NAVY);
+  doc
+    .fillColor("white")
+    .font("Helvetica-Bold")
+    .fontSize(9);
+  const headerTextY = tableY + CELL_PAD_Y;
+  const headerOpts = { characterSpacing: 0.5 };
+  doc.text("ITEM", colName.x, headerTextY, headerOpts);
+  doc.text("QTY", colQty.x, headerTextY, { ...headerOpts, width: colQty.width, align: "right" });
+  doc.text("UNIT", colUnit.x, headerTextY, { ...headerOpts, width: colUnit.width });
+  doc.text("RATE", colRate.x, headerTextY, { ...headerOpts, width: colRate.width, align: "right" });
+  doc.text("AMOUNT", colAmount.x, headerTextY, { ...headerOpts, width: colAmount.width, align: "right" });
+  doc.fillColor("black").font("Helvetica").fontSize(ROW_FONT_SIZE);
+  tableY += headerHeight;
 
   let subtotal = 0;
-  for (const line of pi.lines) {
+  pi.lines.forEach((line, i) => {
     const price = decryptNumber(line.unitPrice);
     const amount = price * line.qty;
     subtotal += amount;
-    const y = doc.y;
+
     // SKU name, per the buyer-facing document requirement — never the
     // internal code, which buyers won't recognize.
-    doc.text(line.sku.name, cols.name, y, { width: 200 });
-    doc.text(String(line.qty), cols.qty, y);
-    doc.text(line.unit, cols.unit, y);
-    doc.text(price.toFixed(2), cols.price, y);
-    doc.text(amount.toFixed(2), cols.amount, y);
-    doc.moveDown();
-  }
+    doc.font("Helvetica-Bold").fontSize(ROW_FONT_SIZE);
+    const nameHeight = doc.heightOfString(line.sku.name, { width: colName.width });
+    const rowHeight = Math.max(ROW_FONT_SIZE + CELL_PAD_Y * 2, nameHeight + CELL_PAD_Y * 2);
 
-  doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
-  doc.moveDown(0.5);
-  doc.font("Helvetica-Bold");
+    // Even rows (2nd, 4th, ...) get the light shade; odd rows stay white.
+    if (i % 2 === 1) {
+      doc.rect(TABLE_X, tableY, TABLE_WIDTH, rowHeight).fill(ROW_SHADE);
+    }
+
+    const textY = tableY + CELL_PAD_Y;
+    doc.fillColor("black").font("Helvetica-Bold").text(line.sku.name, colName.x, textY, { width: colName.width });
+    doc.font("Helvetica");
+    doc.text(String(line.qty), colQty.x, textY, { width: colQty.width, align: "right" });
+    doc.text(line.unit, colUnit.x, textY, { width: colUnit.width });
+    doc.text(price.toFixed(2), colRate.x, textY, { width: colRate.width, align: "right" });
+    doc.text(amount.toFixed(2), colAmount.x, textY, { width: colAmount.width, align: "right" });
+
+    doc
+      .moveTo(TABLE_X, tableY + rowHeight)
+      .lineTo(TABLE_X + TABLE_WIDTH, tableY + rowHeight)
+      .strokeColor(BORDER)
+      .lineWidth(0.5)
+      .stroke()
+      .strokeColor("black")
+      .lineWidth(1);
+
+    tableY += rowHeight;
+  });
+
+  doc.y = tableY + 10;
+  doc.font("Helvetica-Bold").fontSize(11);
   doc.text(`Subtotal: ${subtotal.toFixed(2)}`, { align: "right" });
   doc.text(`Total: ${subtotal.toFixed(2)}`, { align: "right" });
   doc.font("Helvetica");
