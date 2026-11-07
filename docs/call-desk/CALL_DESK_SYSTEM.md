@@ -9,9 +9,10 @@
 
 ## 0. Assumptions used (correct any that are wrong — the design adapts)
 
-This repo already holds the business's OMS (orders, picking, dispatch, Tally references),
-so the assumptions are anchored to a **small manufacturing + trading business in the
-Hindi belt**.
+This repo holds an OMS built for the business (orders, picking, dispatch), but it is
+**not live yet**. Today orders run on WhatsApp + Tally + Excel. The assumptions are
+anchored to a **small manufacturing + trading business in the Hindi belt**, and **nothing
+in this call desk depends on the OMS going live**.
 
 | # | Area | Assumption |
 |---|---|---|
@@ -27,7 +28,7 @@ Hindi belt**.
 | A10 | VIPs | ~40 numbers: 2 bank RMs, CA, lawyer, top 15 buyers, 5 key suppliers, 3 brokers/partners, ~10 family/close friends. |
 | A11 | Emergencies | Vehicle accident, truck held at checkpost/police, payment failure/cheque bounce, GST/IT/labour notice or inspection, factory fire/injury, family medical, top buyer threatening cancellation. |
 | A12 | Must never | Bot talking to a VIP; staff quoting prices/discounts/credit; leak of finance or personal recordings; alert spam; callers feeling brushed off. |
-| A13 | Tools | WhatsApp Business app, Tally Prime, Excel, Google account, this OMS. Office broadband + Jio hotspot backup. |
+| A13 | Tools | WhatsApp Business app, Tally Prime, Excel, Google account. OMS built but **not live**. No single list of buyer/vendor phone numbers. Office broadband + Jio hotspot backup. |
 | A14 | Budget/speed | ₹15–25k/month tech (excluding salary), ₹50k–1.5 lakh one-time. Phase 0 live this week. |
 | A15 | Founder's day | Mornings in office; afternoons market/factory/bank; travels 4–6 days/month. Will reply to WhatsApp with a tap or a number, but not more than ~10 times a day. |
 
@@ -111,7 +112,7 @@ Unknown numbers meet a human first, except after hours.
 | 2. Rank numbers by frequency | Freelancer | Google Sheet pivot: number → call count. The top ~300 numbers cover most volume. |
 | 3. Export phone contacts | Freelancer | Google Contacts → Export CSV (names already saved). Merge with step 2. |
 | 4. **Founder tags in one 45-min sitting** | Founder + front desk reading out | For each number, one tag from the list below + **owner staff**. Do it fast: "Sharma Traders — buyer-top, Rohit". |
-| 5. Add from OMS + Tally | Sunita | Buyer phone numbers from OMS orders (`buyerContact`) and the Tally ledger → tag `BUYER`. Supplier numbers → `VENDOR`. |
+| 5. Add from Tally + Excel | Sunita | Phone numbers from Tally ledger masters (sundry debtors → `BUYER`, sundry creditors → `VENDOR`) and any Excel party lists. Tally ledgers often lack phone numbers; fill gaps from WhatsApp chats over the following weeks. |
 | 6. Staff and transporters | Ramesh/Sunita | Staff list + regular transporters/drivers. |
 
 **Tag list (one primary tag per number):**
@@ -219,7 +220,7 @@ any phone and doesn't need office internet.
 |---|---|---|
 | **Keywords:** *accident, gaadi palat gayi, truck pakda, checkpost, police, challan, notice, GST wale aaye, inspection, raid, court, case, cheque bounce, cheque wapas, payment fail, paisa nahi aaya (from a bank/top buyer), aag, hospital, injury, order cancel kar denge, maal reject* | Front desk hears it → taps **"Escalate"** | Post-call transcript scan flags missed ones; live keyword spotting only if Phase 3 tests prove reliable |
 | **Repeat calls:** same number ≥2 calls in 10 min, or ≥3 in 30 min | Telephony rule (automatic) | Same |
-| **High value:** `BUYER-TOP`, or the buyer has an open OMS order ≥ ₹2 lakh | Tag (automatic) | OMS lookup (automatic) |
+| **High value:** `BUYER-TOP`, or the buyer has a pending order ≥ ₹2 lakh | Tag (automatic) | Lookup in the Dispatch Sheet (automatic); OMS later if it goes live |
 | **Angry/upset tone** | Front desk taps "Upset" | AI sentiment as a hint only, never alone |
 | **Govt / legal caller** | Tag or front desk | Same |
 | **VIP missed twice in a day** | Automatic | Same |
@@ -259,13 +260,13 @@ Traders Indore, 50 bags ka order dispatch kab hoga."
 
 ### 5.4 What the front desk can resolve alone
 Office address/timings, which staff handles what, receiving documents ("WhatsApp par bhej
-dijiye"), dispatch status **read from the OMS** (status only: Finalized / Loaded /
-Dispatched), taking orders **as a message** for Rohit, job enquiries, spam, rescheduling
+dijiye"), dispatch status **read from the Dispatch Sheet** (status only: Pending / Loaded /
+Dispatched + vehicle no.; see §9.6), taking orders **as a message** for Rohit, job enquiries, spam, rescheduling
 callbacks.
 
 ### 5.5 What the front desk must NEVER commit to
 ❌ Prices, rates, discounts · ❌ Credit or payment terms · ❌ Confirming a payment was
-received or sent · ❌ Delivery dates not shown in the OMS · ❌ Sharing bank account
+received or sent · ❌ Delivery dates not written in the Dispatch Sheet · ❌ Sharing bank account
 details (fraud risk; only the accountant sends them, and only from the official
 letterhead/PDF) · ❌ The founder's location or personal number · ❌ Anything on
 legal/government matters beyond taking the name and reference.
@@ -666,12 +667,12 @@ flowchart LR
   CL -->|recording URL + CDR| REC[(Recording storage)]
   REC --> STT[Speech-to-text<br/>Hindi/Hinglish]
   STT --> SUM[LLM summary + tag/priority suggestion]
-  SUM --> LOG[(Call log + tickets<br/>Sheet/AppSheet → OMS DB)]
+  SUM --> LOG[(Call log + tickets<br/>Google Sheet/AppSheet)]
   AIV --> LOG
   RT --> LOG
   LOG --> WA[WhatsApp Business API<br/>alerts, digest, acks, replies]
   WA -->|button replies| LOG
-  LOG <-->|Phase 3: order status| OMS[(Existing OMS)]
+  LOG <-->|order status| DS[(Dispatch Sheet now<br/>OMS later, if live)]
   WA --> SMS[SMS fallback DLT]
 ```
 
@@ -686,13 +687,13 @@ flowchart LR
 ### 9.2 Three stack options (vendors are candidates; **verify availability, features and
 pricing with each vendor** — prices are rough monthly INR estimates at ~120 calls/day)
 
-| Layer | (a) Near-zero tech | (b) Low-code ✅ recommended for Phase 1–2 | (c) Custom (extend this OMS) — Phase 3 |
+| Layer | (a) Near-zero tech | (b) Low-code ✅ recommended for Phase 1–2 | (c) Custom (own small app/DB) — only if needed, Month 3+ |
 |---|---|---|---|
-| Number & routing | Founder's SIM with **conditional forwarding** (busy/no-answer) to front desk mobile; Android DND "starred contacts + repeat callers" / iPhone Focus "Favourites + repeated calls" | Cloud telephony with caller-ID routing and webhooks: **Exotel, MyOperator, Tata Tele Business (Smartflo), Airtel IQ, Knowlarity, Ozonetel, Servetel** | Same telephony vendor, routing logic in the OMS server (Express) via vendor webhooks/APIs |
+| Number & routing | Founder's SIM with **conditional forwarding** (busy/no-answer) to front desk mobile; Android DND "starred contacts + repeat callers" / iPhone Focus "Favourites + repeated calls" | Cloud telephony with caller-ID routing and webhooks: **Exotel, MyOperator, Tata Tele Business (Smartflo), Airtel IQ, Knowlarity, Ozonetel, Servetel** | Same telephony vendor, routing logic in your own small server (or inside the OMS if it is live by then) via vendor webhooks/APIs |
 | Recording | Manual (none) | Built into the telephony plan (toggle per route — verify) | Same; recordings copied to your own storage (S3/R2) |
 | Transcription | — | **Sarvam AI (Saarika)**, Google Cloud STT (Chirp), Deepgram, ElevenLabs Scribe, OpenAI transcription models; test 20 real calls on 2–3 vendors | Same, chosen by measured accuracy |
-| Summary | — | LLM via Make/n8n (e.g. Claude Haiku-class model) | LLM API called from OMS server |
-| Call log / tickets | Google Form + Google Sheet | **Google Sheets + AppSheet** (mobile app for front desk/staff), or Glide | New `Contact`, `Call`, `Ticket` tables in the OMS Postgres; screens in the existing PWA; reuses existing roles/RBAC and audit log |
+| Summary | — | LLM via Make/n8n (e.g. Claude Haiku-class model) | LLM API called from your server |
+| Call log / tickets | Google Form + Google Sheet | **Google Sheets + AppSheet** (mobile app for front desk/staff), or Glide | `Contact`, `Call`, `Ticket` tables in Postgres. If the OMS is live by then, add them there (reuses its logins, roles, audit log); otherwise a standalone app |
 | Automation glue | — | **Make.com** or self-hosted **n8n** | Native code |
 | WhatsApp | WhatsApp Business **app** (quick replies, labels) | WhatsApp API via a BSP: **Interakt, AiSensy, WATI, Gupshup** (or Meta Cloud API direct). Check "coexistence" support if you want the app + API on one number. | Meta WhatsApp Cloud API direct |
 | AI voice | — | **Bolna, Sarvam (Samvaad), Exotel voicebot, Ringg, Gnani.ai**, or Vapi/Retell with Indian telephony (verify Indian number support + Hindi latency) | Same, via SIP/WebSocket |
@@ -703,9 +704,11 @@ pricing with each vendor** — prices are rough monthly INR estimates at ~120 ca
 **Recommendation (three lenses agree):**
 - Start with **(a) this week** (Phase 0).
 - Go **(b)** in Weeks 1–6.
-- Move the log, tickets and routing brain into **(c) the OMS** in Months 2–3, because the
-  OMS already knows your buyers and orders. That unlocks "where is my order?" answers and
-  removes the Make/AppSheet lock-in.
+- Stay on **(b)** through Month 3. Go **(c)** only if AppSheet/Make becomes the bottleneck
+  (cost, speed, >~15k rows, or you want deeper order lookups).
+- **Do not tie the call desk to the OMS launch.** If the OMS goes live later, the Dispatch
+  Sheet is replaced by an OMS lookup and the call-desk tables can move into it. That is an
+  upgrade, not a dependency.
 - From day 1, the contact sheet is the single source of truth and must be exportable as
   CSV.
 
@@ -721,7 +724,7 @@ pricing with each vendor** — prices are rough monthly INR estimates at ~120 ca
 | language | string | Hindi / Marwari / English … |
 | voice_only | bool | |
 | record_calls | bool | default false for VIP-FAMILY |
-| oms_buyer_ref | string? | link to OMS orders (Phase 3) |
+| party_ref | string? | Tally ledger name / Dispatch Sheet party (OMS buyer later) |
 | created_by, updated_at, notes | | |
 
 **`calls`**
@@ -771,7 +774,7 @@ forwarded **permanently**. Never decommission it.
 | Failure | Fail-safe | Who acts |
 |---|---|---|
 | Cloud telephony platform down | Vendor's backup routing to a fixed mobile (configure "failover number" = front desk; verify vendor supports it). **Kill switch:** founder dials `##21#` and his SIM rings directly again in seconds. Practise it once. | Founder / front desk |
-| Routing lookup (Sheet/OMS) slow or down | 2 s timeout → default route: front desk → founder → ticket | Automatic |
+| Routing lookup (contact Sheet) slow or down | 2 s timeout → default route: front desk → founder → ticket | Automatic |
 | AI voice down / slow | Platform falls back to ringing the duty phone, then a recorded human-voice message ("Aapka call note ho gaya, call back hoga") + ticket from caller ID | Automatic |
 | Transcription/LLM fails | Recording kept; front desk fills a 2-field note; summary marked "manual" | Front desk |
 | WhatsApp API down / template rejected | SMS fallback for acks; founder alerts by SMS; digest sent when restored | Automatic |
@@ -780,6 +783,16 @@ forwarded **permanently**. Never decommission it.
 | Founder's 2nd SIM unreachable | VIP calls go to the named backup, then front desk + P0 alert | Automatic |
 | Wrong tag (e.g. VIP marked BLOCK) | BLOCK still logs the call; daily digest lists blocked numbers that called ≥2 times | Founder |
 | Power cut at office | Front desk on mobile + power bank; laptop not required for calls | Front desk |
+
+### 9.6 Dispatch Sheet (stand-in for order status while the OMS is not live)
+
+One Google Sheet, one row per order, updated by Ramesh/Rohit (2 minutes per order):
+`date · party name · party phone · items/qty (short) · status (Pending / Loaded /
+Dispatched / Delivered) · vehicle no. · driver phone · expected date (only if Rohit
+confirmed it)`.
+The front desk reads it to answer "maal kab aayega?" calls. Phase 3 auto-shows the
+caller's rows on ring. **No prices in this sheet.** When the OMS goes live, it replaces
+the sheet. See COMBINED_PLAN.md.
 
 ---
 
@@ -806,7 +819,7 @@ time.
 | Lawful basis | Callers voluntarily share details to get a callback/service. This plausibly falls under consent/"legitimate use", but confirm with your lawyer. Use data only for handling their call/business. |
 | Notice | Short privacy note on the WhatsApp profile/website: what's recorded, why, retention, grievance contact. The recording announcement points to it implicitly. |
 | Purpose limitation | No marketing blasts to call-log numbers without separate opt-in. |
-| Security safeguards | Role-based access (below), 2FA for admins (the OMS already supports TOTP), vendor accounts on the company email, no recordings on personal phones. |
+| Security safeguards | Role-based access (below), 2FA on every vendor and Google account, vendor accounts on the company email, no recordings on personal phones. |
 | Retention & erasure | See the table below; automatic deletion jobs. |
 | Rights & grievance | Named grievance contact (e.g. Sunita); delete or correct a caller's data on request within a set time. |
 | Breach | If recordings/logs leak: inform the Data Protection Board and affected people as the Rules require. Keep a one-page breach playbook. |
@@ -901,20 +914,21 @@ time.
 - **Go/no-go for AI voice:** pass §6.4 (≥26/28, all ★). Then a 2-week after-hours pilot
   where the founder listens to 10 random calls a week.
 
-### Phase 3 — Months 2–3: Follow-ups, order/payment lookups, analytics (move into the OMS)
+### Phase 3 — Months 2–3: Follow-ups, order/payment lookups, analytics
 
 | What's built | Who | Cost (est.) |
 |---|---|---|
-| `Contact`/`Call`/`Ticket` tables + screens in this OMS; migrate from AppSheet | Developer | ₹2–4 lakh one-time |
-| Caller → OMS buyer match (normalise `Order.buyerContact`); front desk sees open orders + dispatch status on ring | Developer | incl. |
-| "Where is my order?" answered by front desk (and later the AI, **status only**, for verified numbers) | Developer | incl. |
-| Automated follow-ups: lead not converted in 3 days → reminder to Rohit; payment promise date → reminder to Sunita | Developer | incl. |
-| Weekly analytics: lead response time, conversion by source, lost-lead reasons | Developer | incl. |
+| Caller → Dispatch Sheet match: front desk sees the caller's pending orders + dispatch status on ring | Freelancer | ₹10–25k one-time |
+| *(Optional)* Move log/tickets to own DB (or into the OMS if live) — only if AppSheet limits bite | Developer | ₹1.5–3 lakh one-time |
+| "Where is my order?" answered by front desk (and later the AI, **status only**, for verified numbers) | Freelancer | incl. |
+| Automated follow-ups: lead not converted in 3 days → reminder to Rohit; payment promise date → reminder to Sunita | Freelancer | incl. |
+| Weekly analytics: lead response time, conversion by source, lost-lead reasons | Freelancer | incl. |
 
 - **Success metrics:** ≥60% of calls resolved without the founder; lead first-callback
   < 1 h; dispatch-status calls resolved by the front desk without staff ≥80%.
-- **Go/no-go:** data parity with AppSheet for 1 week running in parallel, and RBAC tests
-  extended (finance/personal restrictions) and green.
+- **Go/no-go:** front desk answers 20 test "maal kab aayega?" calls correctly from the
+  lookup; if moving to an own DB, 1 week of parallel running with matching data and
+  finance/personal access restrictions verified.
 
 ---
 
@@ -944,7 +958,7 @@ time.
 | 3 | **Staff don't pick up or don't call back** | High / High | Fallback chains; click-to-call logging (proof); reminders + overdue escalation; scoreboard; incentive tied to on-time %; founder reviews the weekly report with staff. |
 | 4 | **Speech recognition errors** (dialect, noise) produce wrong summaries | High / Med | Humans route live; AI summaries are suggestions the front desk confirms; STT bake-off on *your* calls; caller ID + recording always kept; keyword triggers never sole basis for silence. |
 | 5 | **Cost overrun** (minutes, AI voice, transcription) | Med / Med | Don't record/transcribe VIP/personal; AI voice after hours first; monthly cost line in the weekly report; cap AI call length at 2 min; vendor alerts at 80% of budget. |
-| 6 | **Vendor failure or lock-in** | Med / High | Failover number + `##21#` kill switch; contacts/logs exportable CSV weekly; Phase 3 moves the brain into your own OMS; avoid long prepaid contracts in the first 3 months. |
+| 6 | **Vendor failure or lock-in** | Med / High | Failover number + `##21#` kill switch; contacts/logs exportable CSV weekly; keep the routing rules documented so any freelancer can rebuild them on another vendor; avoid long prepaid contracts in the first 3 months. |
 | 7 | **Privacy breach** (finance/personal recordings leak) | Low / High | No recording on family routes; restricted finance category; role-based access; company-owned vendor accounts with 2FA; no downloads for non-founder roles; retention auto-delete. |
 | 8 | **Regulatory issues** (recording, DPDP, WhatsApp/TRAI rules) | Low–Med / Med | Disclosure line; inbound-only automation; utility templates + opt-out; DLT for SMS; lawyer review of the privacy note and staff policy before Phase 1 go-live; diary the DPDP effective dates. |
 
@@ -975,6 +989,8 @@ cross-trained, AI overflow as a temporary backstop.
 | 7 | Review Phase 0 numbers: missed calls acked %, callbacks done %; go/no-go for Phase 1 purchase | Founder + Freelancer |
 
 ---
+
+*Combined rollout with the OMS:* see [COMBINED_PLAN.md](COMBINED_PLAN.md).
 
 *Next decision for the founder:* confirm or correct §0, then approve the Phase 1 vendor
 trial. Everything else follows from those two.
