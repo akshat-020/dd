@@ -46,7 +46,7 @@ When replying to an alert, the ticket number is optional. The buttons on alerts 
 ## Setup (about 1 hour)
 
 1. **Create the sheet.** Make a new Google Sheet with the business Google account, then open Extensions → Apps Script.
-2. **Add the code.** Create one script file per file in `src/` with the same name, and paste in its contents. Replace `appsscript.json`; to see it, tick Project Settings → *Show "appsscript.json"*.
+2. **Add the code.** Easiest: delete everything in `Code.gs` and paste the whole of [`dist/CallDesk.gs`](dist/CallDesk.gs), which is all of `src/` in one file. (Or create one script file per file in `src/`.) Replace `appsscript.json`; to see it, tick Project Settings → *Show "appsscript.json"*.
    - Or use [clasp](https://github.com/google/clasp): `cd call-desk/src && clasp create --type sheets && clasp push`.
 3. **Set up the tabs.** Reload the sheet. A **Call Desk** menu appears. Run **1. Set up sheets** and approve the permissions.
 4. **Fill in Staff:** one row per person with name, WhatsApp number and role. Exactly one **FOUNDER** row is required. Add one DEPUTY, one FRONT_DESK, and everyone else as STAFF.
@@ -116,4 +116,10 @@ The business rules (`Logic.gs`) and the full flow run in Node against an in-memo
 
 ```bash
 node --test call-desk/test/*.test.js
+```
+
+After changing anything in `src/`, regenerate the single paste-able file:
+
+```bash
+node call-desk/scripts/bundle.js
 ```
