@@ -313,6 +313,9 @@ describe("Full permission-catalogue audit — every gated action rejects an acco
       "pricing.setDefaultPrice",
       "inventory.reconciliationCount",
       "inventory.reconciliationApprove",
+      // Covered by parties.test.ts.
+      "parties.view",
+      "parties.edit",
     ]);
     const coveredHere = new Set<PermissionKey>([
       "orders.createDraft",

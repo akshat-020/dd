@@ -25,6 +25,8 @@ export type PermissionKey =
   | "masterdata.editSku"
   | "masterdata.bulkImportSku"
   | "masterdata.editLocation"
+  | "parties.view"
+  | "parties.edit"
   | "admin.viewAuditLog"
   | "admin.configureSettings";
 
@@ -71,6 +73,13 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { key: "masterdata.editSku", label: "Edit SKU master (name, unit, category, conversion factor)" },
       { key: "masterdata.bulkImportSku", label: "Bulk import/update SKU master" },
       { key: "masterdata.editLocation", label: "Edit/delete location master" },
+    ],
+  },
+  {
+    label: "Parties / Contacts",
+    permissions: [
+      { key: "parties.view", label: "View the party/contact master (buyers, vendors, etc.)" },
+      { key: "parties.edit", label: "Add/edit parties and import the contact sheet (VIP tags stay Owner-only)" },
     ],
   },
   {

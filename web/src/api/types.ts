@@ -147,6 +147,8 @@ export interface Order {
   orderNumber: string;
   buyerName: string;
   buyerContact?: string | null;
+  // Link to the party/contact master (auto-set when buyerContact matches a known phone).
+  partyId?: string | null;
   status: OrderStatus;
   vehicleCapacityNote?: string | null;
   createdBy: { id: string; name: string };
@@ -393,4 +395,57 @@ export interface OpeningStockCommitResponse {
   applied: number;
   skipped: number;
   rows: OpeningStockRowResult[];
+}
+
+export type PartyTag =
+  | "VIP_FAMILY"
+  | "VIP_FINANCE"
+  | "BUYER_TOP"
+  | "BUYER"
+  | "LEAD"
+  | "VENDOR_KEY"
+  | "VENDOR"
+  | "STAFF"
+  | "TRANSPORT"
+  | "PARTNER"
+  | "GOVT"
+  | "BLOCK"
+  | "UNKNOWN";
+
+export interface PartyPhone {
+  phone: string;
+  label?: string | null;
+}
+
+export interface Party {
+  id: string;
+  name: string;
+  firm?: string | null;
+  city?: string | null;
+  tag: PartyTag;
+  ownerStaff?: string | null;
+  backupStaff?: string | null;
+  language?: string | null;
+  voiceOnly: boolean;
+  recordCalls: boolean;
+  notes?: string | null;
+  phones: PartyPhone[];
+}
+
+export interface PartyImportResponse {
+  created: number;
+  updated: number;
+  errors: number;
+  results: { row: number; status: "created" | "updated" | "error"; partyId?: string; error?: string }[];
+}
+
+export interface IntegrationTokenInfo {
+  id: string;
+  name: string;
+  scopes: string[];
+  createdAt: string;
+  lastUsedAt?: string | null;
+  revokedAt?: string | null;
+  // Present only in the response that created it.
+  token?: string;
 }

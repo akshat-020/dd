@@ -221,12 +221,20 @@ model Order {
   // (invoicing can lag behind physical dispatch). Never set by Invoice
   // Reference creation itself; see routes/invoiceReferences.ts.
   completedAt         DateTime?
+  // Optional link to the shared party/contact master (see model Party).
+  // buyerName/buyerContact stay as the free-text snapshot typed on the
+  // order; partyId is what lets a caller's phone number be matched to
+  // their orders reliably.
+  party               Party?    @relation(fields: [partyId], references: [id])
+  partyId             String?
 
   lines             OrderLine[]
   pickListItems     PickListItem[]
   invoiceReferences InvoiceReference[]
   putBackTasks      PutBackTask[]
   proformaInvoices  ProformaInvoice[]
+
+  @@index([partyId])
 }
 
 model OrderLine {
@@ -497,4 +505,59 @@ model ProformaInvoiceLine {
   unit              String
   // Encrypted at rest (AES-256-GCM) — see OrderLinePrice.unitPrice comment.
   unitPrice         String
+}
+
+// Shared party/contact master — one list of buyers, vendors, staff,
+// transporters etc., used both by orders and by the call desk (see
+// docs/call-desk/COMBINED_PLAN.md). `tag` is a validated String (see
+// src/lib/parties.ts), not a Postgres enum, for the same reason Role is.
+model Party {
+  id          String       @id @default(cuid())
+  name        String
+  firm        String?
+  city        String?
+  tag         String       @default("UNKNOWN")
+  // Staff member who normally handles this party (free text, e.g. "Rohit"),
+  // and their backup — used by the call desk's routing.
+  ownerStaff  String?
+  backupStaff String?
+  language    String?
+  // Caller can't read text messages — call desk raises callback priority.
+  voiceOnly   Boolean      @default(false)
+  // Whether calls from this party may be recorded. VIP_FAMILY is forced
+  // false regardless (see lib/parties.ts).
+  recordCalls Boolean      @default(true)
+  notes       String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  phones      PartyPhone[]
+  orders      Order[]
+}
+
+// One row per phone number, stored normalized (+91XXXXXXXXXX). The phone
+// itself is the primary key, so a number can only ever belong to one
+// party — which is what makes caller-ID lookup unambiguous.
+model PartyPhone {
+  phone     String   @id
+  party     Party    @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  partyId   String
+  label     String?
+  createdAt DateTime @default(now())
+
+  @@index([partyId])
+}
+
+// Machine-to-machine token for integrations (the call desk's telephony /
+// automation layer). Only a SHA-256 hash is stored; the plaintext is shown
+// once at creation. Scoped and individually revocable by the Owner.
+model IntegrationToken {
+  id          String    @id @default(cuid())
+  name        String
+  tokenHash   String    @unique
+  // Comma-separated scopes, e.g. "party.lookup"
+  scopes      String
+  createdById String
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
 }

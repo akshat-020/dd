@@ -26,6 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/stock-transfer", label: "Transfer Stock", permission: "inventory.transferStock" },
   { to: "/put-backs", label: "Put-backs", permission: "inventory.scanPutaway" },
   { to: "/my-tasks", label: "My Tasks", anyPermission: ["inventory.scanPutaway", "inventory.logInwardEntry"] },
+  { to: "/contacts", label: "Contacts", permission: "parties.view" },
   { to: "/skus", label: "SKUs" },
   { to: "/locations", label: "Locations" },
   // Standalone SKU -> location search, independent of any active pick task.

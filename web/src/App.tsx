@@ -20,6 +20,7 @@ import StockLookup from "./pages/StockLookup";
 import StockTransfer from "./pages/StockTransfer";
 import PutBacks from "./pages/PutBacks";
 import SettingsPage from "./pages/Settings";
+import PartiesPage from "./pages/Parties";
 import OpeningStock from "./pages/OpeningStock";
 
 function LoginRoute() {
@@ -130,6 +131,14 @@ export default function App() {
               element={
                 <ProtectedRoute permission="admin.configureSettings">
                   <SettingsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/contacts"
+              element={
+                <ProtectedRoute permission="parties.view">
+                  <PartiesPage />
                 </ProtectedRoute>
               }
             />

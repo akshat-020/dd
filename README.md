@@ -74,7 +74,7 @@ price/cost data unrecoverable — back it up somewhere other than the database i
 npm run test:server --workspace server
 ```
 
-57 tests across 4 files cover: RBAC (price fields are structurally absent from API
+Tests cover: RBAC (price fields are structurally absent from API
 responses for Sales/Warehouse, not just hidden), the full order → finalize → pick →
 invoice flow, wrong-item/wrong-location pick rejection, stock ledger correctness
 (putaway, transfer, insufficient-stock rejection), invoice cancellation reversing
@@ -319,6 +319,33 @@ migration) once this is actually running the business day-to-day.
 
 **Local Postgres for testing this flow yourself** before deploying: the devcontainer
 already provisions one — see `.devcontainer/setup-postgres.sh`.
+
+## Contacts (party master) & call-desk caller lookup
+
+Added for the call desk plan (`docs/call-desk/COMBINED_PLAN.md`, gaps G1–G3):
+
+- **Contacts page** (`/contacts`, `web/src/pages/Parties.tsx`): one list of buyers,
+  vendors, staff, transporters etc. Each phone number is stored normalized
+  (`+91XXXXXXXXXX`, see `server/src/lib/parties.ts`) and can belong to only one
+  party. Import the contact-tagging sheet as CSV (columns: `name, firm, city, tag,
+  phone, phone2, owner_staff, backup_staff, language, voice_only, record_calls,
+  notes`); re-importing updates existing parties matched by phone.
+- **Access:** `parties.view` / `parties.edit` permissions (in the Sales and Accountant
+  templates for new accounts; grant them to existing accounts from Users). The VIP-class
+  tags (`VIP_FAMILY`, `VIP_FINANCE`, `BUYER_TOP`, `VENDOR_KEY`) can only be set or
+  removed by the Owner, and `VIP_FAMILY` contacts are invisible to everyone else.
+- **Orders link to parties:** `partyId` on create/edit, or automatically when the
+  typed buyer contact matches a known phone.
+- **Caller lookup for the phone system:** the Owner creates a key on the Contacts page
+  ("Phone system keys"). The telephony layer calls
+  `GET /api/integration/lookup?phone=<caller id>` with header
+  `x-integration-token: <key>` and gets the party (name, tag, owner staff,
+  voice-only, record-calls) plus up to 5 finalized/loaded/recently-dispatched orders.
+  **No prices, no drafts.** Only a hash of the key is stored; keys can be revoked
+  instantly. The phone system must still use a short timeout (≈2 s) and fall back
+  to ringing the front desk.
+- **Hosting:** `render.yaml` now uses an always-on paid plan, because the free plan's
+  30–60 s wake-up is too slow for a live call lookup.
 
 ## What's built (Phase 1) vs. deferred (Phase 2/3)
 

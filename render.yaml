@@ -13,7 +13,11 @@ services:
   - type: web
     name: oms-erp
     runtime: node
-    plan: free
+    # Always-on paid instance: the free plan sleeps after ~15 min idle and
+    # takes 30-60 s to wake, which is too slow for the call desk's live
+    # caller lookup (docs/call-desk/COMBINED_PLAN.md, gap G3). Check current
+    # Render pricing before deploying.
+    plan: starter
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     healthCheckPath: /api/health

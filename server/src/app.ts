@@ -19,6 +19,8 @@ import { putBacksRouter } from "./routes/putBacks.js";
 import { settingsRouter } from "./routes/settings.js";
 import { proformaInvoicesRouter } from "./routes/proformaInvoices.js";
 import { openingStockRouter } from "./routes/openingStock.js";
+import { partiesRouter } from "./routes/parties.js";
+import { integrationRouter, integrationTokensRouter } from "./routes/integration.js";
 import { corsOptions, apiRateLimit, loginRateLimit, enforceHttps, noIndex } from "./lib/security.js";
 
 export function createApp() {
@@ -59,6 +61,11 @@ export function createApp() {
   app.use("/api/settings", settingsRouter);
   app.use("/api/proforma-invoices", proformaInvoicesRouter);
   app.use("/api/opening-stock", openingStockRouter);
+  app.use("/api/parties", partiesRouter);
+  // Machine-to-machine (call desk telephony) — authenticated by an
+  // integration token, not a user session. See routes/integration.ts.
+  app.use("/api/integration", integrationRouter);
+  app.use("/api/integration-tokens", integrationTokensRouter);
 
   // Serves the built frontend when present, so a single deployed service
   // can host both API and web app (one URL, no CORS to configure between

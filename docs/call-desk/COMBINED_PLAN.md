@@ -3,6 +3,17 @@
 > Companion to [CALL_DESK_SYSTEM.md](CALL_DESK_SYSTEM.md). Costs are monthly INR
 > estimates to verify with vendors.
 
+**Status (7 Nov 2026):** two-track plan **approved** by the founder.
+Track B week-1 code is done in this repo:
+- G1 (Contacts/party master + order linking) — done.
+- G2 (integration key + caller lookup endpoint) — done.
+- G3 (always-on hosting in `render.yaml`) — done; switching the plan on Render is a
+  billing decision.
+- G4 (shared WhatsApp account) — pending; it starts with call-desk Phase 1.
+- Not built yet: pending-order *value* in the lookup, for the ₹2 lakh escalation. It
+  needs a price-derived flag; decide whether the front desk may see it.
+See the README section "Contacts (party master) & call-desk caller lookup".
+
 ## 1. Can each be done standalone? (checked)
 
 | Question | Answer | Evidence |

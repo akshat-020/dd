@@ -37,6 +37,9 @@ const PERMISSIONS = {
   "masterdata.bulkImportSku": "Bulk import/update SKU master",
   "masterdata.editLocation": "Edit/delete location master",
 
+  "parties.view": "View the party/contact master (buyers, vendors, etc.)",
+  "parties.edit": "Add/edit parties and import the contact sheet (VIP tags stay Owner-only)",
+
   "admin.viewAuditLog": "View the full audit log",
   "admin.configureSettings": "Configure system settings",
 } as const;
@@ -80,6 +83,7 @@ export const PERMISSION_GROUPS: { label: string; keys: PermissionKey[] }[] = [
     ],
   },
   { label: "Master Data", keys: ["masterdata.editSku", "masterdata.bulkImportSku", "masterdata.editLocation"] },
+  { label: "Parties / Contacts", keys: ["parties.view", "parties.edit"] },
   { label: "Admin", keys: ["admin.viewAuditLog", "admin.configureSettings"] },
 ];
 
@@ -105,8 +109,10 @@ export const ROLE_TEMPLATES: Record<Role, PermissionKey[]> = {
     "masterdata.editLocation",
     "admin.viewAuditLog",
     "orders.viewFullHistory",
+    "parties.view",
+    "parties.edit",
   ],
-  SALES: ["orders.createDraft", "orders.editFinalized", "inventory.viewStockFull", "inventory.logInwardEntry"],
+  SALES: ["orders.createDraft", "orders.editFinalized", "inventory.viewStockFull", "inventory.logInwardEntry", "parties.view", "parties.edit"],
   WAREHOUSE: ["inventory.scanPutaway", "inventory.transferStock", "masterdata.editSku", "masterdata.bulkImportSku", "masterdata.editLocation"],
 };
 

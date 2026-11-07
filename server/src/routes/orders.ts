@@ -9,6 +9,7 @@ import { decryptNumber } from "../lib/crypto.js";
 import { skuDefaultPriceForUnit } from "../lib/pricing.js";
 import { getCommittedQuantities, reconcileOrderLineAllocation, ShortfallError } from "../lib/stock.js";
 import { resolveUnitFactor, toBaseQty, InvalidUnitError } from "../lib/units.js";
+import { canSeeParty, normalizePhone } from "../lib/parties.js";
 
 export const ordersRouter = Router();
 
@@ -290,9 +291,17 @@ const orderLineInput = z.object({
 const createOrderSchema = z.object({
   buyerName: z.string().min(1),
   buyerContact: z.string().optional(),
+  partyId: z.string().min(1).optional(),
   vehicleCapacityNote: z.string().optional(),
   lines: z.array(orderLineInput).min(1),
 });
+
+async function partyIdForContact(contact: string | undefined): Promise<string | null> {
+  const phone = normalizePhone(contact);
+  if (!phone) return null;
+  const entry = await prisma.partyPhone.findUnique({ where: { phone } });
+  return entry?.partyId ?? null;
+}
 
 ordersRouter.post("/", requirePermission("orders.createDraft"), async (req: AuthedRequest, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
@@ -323,12 +332,25 @@ ordersRouter.post("/", requirePermission("orders.createDraft"), async (req: Auth
     throw err;
   }
 
+  // Link to the party master: an explicit partyId wins; otherwise, if the
+  // typed buyer contact matches a known party's phone, link automatically
+  // so the call desk can find this order from the caller's number.
+  let partyId: string | null = null;
+  if (parsed.data.partyId) {
+    const party = await prisma.party.findUnique({ where: { id: parsed.data.partyId } });
+    if (!party || !canSeeParty(req.user!.role, party.tag)) return res.status(404).json({ error: "Party not found" });
+    partyId = party.id;
+  } else {
+    partyId = await partyIdForContact(parsed.data.buyerContact);
+  }
+
   const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}`;
   const order = await prisma.order.create({
     data: {
       orderNumber,
       buyerName: parsed.data.buyerName,
       buyerContact: parsed.data.buyerContact,
+      partyId,
       vehicleCapacityNote: parsed.data.vehicleCapacityNote,
       createdById: req.user!.id,
       lines: { create: lineData },
@@ -379,6 +401,8 @@ ordersRouter.get("/:id/stock-check", requireOrderViewAccess(), async (req: Authe
 const updateLinesSchema = z.object({
   buyerName: z.string().min(1).optional(),
   buyerContact: z.string().optional(),
+  // null unlinks the order from its party.
+  partyId: z.string().min(1).nullable().optional(),
   vehicleCapacityNote: z.string().optional(),
   lines: z
     .array(
@@ -426,6 +450,10 @@ ordersRouter.patch("/:id", requirePermission("orders.editFinalized"), async (req
     return res.status(409).json({ error: "Only draft, finalized, or loaded (not yet invoiced) orders can be edited" });
   }
   const isFinalized = before.status === "FINALIZED" || before.status === "LOADED";
+  if (parsed.data.partyId) {
+    const party = await prisma.party.findUnique({ where: { id: parsed.data.partyId } });
+    if (!party || !canSeeParty(req.user!.role, party.tag)) return res.status(404).json({ error: "Party not found" });
+  }
 
   try {
     await prisma.$transaction(async (tx) => {
