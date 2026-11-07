@@ -3,16 +3,13 @@
 > Companion to [CALL_DESK_SYSTEM.md](CALL_DESK_SYSTEM.md). Costs are monthly INR
 > estimates to verify with vendors.
 
-**Status (7 Nov 2026):** two-track plan **approved** by the founder.
-Track B week-1 code is done in this repo:
-- G1 (Contacts/party master + order linking) — done.
-- G2 (integration key + caller lookup endpoint) — done.
-- G3 (always-on hosting in `render.yaml`) — done; switching the plan on Render is a
-  billing decision.
-- G4 (shared WhatsApp account) — pending; it starts with call-desk Phase 1.
-- Not built yet: pending-order *value* in the lookup, for the ₹2 lakh escalation. It
-  needs a price-derived flag; decide whether the front desk may see it.
-See the README section "Contacts (party master) & call-desk caller lookup".
+**Status (7 Nov 2026):** two-track plan approved, **with the call desk built first**.
+- Call desk software is built in [`call-desk/`](../../call-desk/README.md), as a Google Sheet plus
+  Apps Script. It is fully standalone and needs nothing from the OMS.
+- OMS: the week-1 pieces were built earlier (contacts master, caller-lookup key,
+  always-on hosting; see the README section "Contacts (party master) & call-desk caller
+  lookup"). They are **parked**, with no further OMS work until the founder decides to
+  take the OMS live. Join J2 (order status on ring) waits until then.
 
 ## 1. Can each be done standalone? (checked)
 
