@@ -151,6 +151,29 @@ export class ShortfallError extends Error {
   }
 }
 
+// Pending (unconfirmed) PutBackTask quantity already queued against each of
+// the given PickListItem ids, keyed by item id. A PICKED item's qtyPicked
+// only drops once its put-back is physically *confirmed* (routes/
+// putBacks.ts) — until then, "how much of this item is still genuinely
+// outstanding" is qtyPicked net of this map's value for it, not the raw
+// qtyPicked. Anything that restores stock from a picked item — a Final Qty
+// reduction, an order cancellation, an Invoice Reference cancellation or
+// adjustment — must net against this or it can double-credit a return
+// that's already queued elsewhere. Shared rather than reimplemented per
+// caller, to avoid the same class of bug recurring in a second place.
+export async function pendingPutBackByItem(
+  tx: Pick<typeof prismaClient, "putBackTask">,
+  pickListItemIds: string[]
+): Promise<Map<string, number>> {
+  if (pickListItemIds.length === 0) return new Map();
+  const grouped = await tx.putBackTask.groupBy({
+    by: ["sourcePickListItemId"],
+    where: { sourcePickListItemId: { in: pickListItemIds }, status: "PENDING" },
+    _sum: { quantity: true },
+  });
+  return new Map(grouped.map((p) => [p.sourcePickListItemId, p._sum.quantity ?? 0]));
+}
+
 // Reconciles a FINALIZED order line's pick-list allocation after its Final
 // Qty changes (or when a brand-new line is added to an already-finalized
 // order — that's just this same logic starting from zero existing
@@ -202,12 +225,10 @@ export async function reconcileOrderLineAllocation(
   // that confirmation must still know how much of that qtyPicked is
   // already earmarked for return — otherwise repeated edits would queue
   // overlapping put-back tasks that together exceed what's actually picked.
-  const pendingPutBacks = await tx.putBackTask.groupBy({
-    by: ["sourcePickListItemId"],
-    where: { sourcePickListItemId: { in: thisLineItems.map((i) => i.id) }, status: "PENDING" },
-    _sum: { quantity: true },
-  });
-  const pendingBySourceItem = new Map(pendingPutBacks.map((p) => [p.sourcePickListItemId, p._sum.quantity ?? 0]));
+  const pendingBySourceItem = await pendingPutBackByItem(
+    tx,
+    thisLineItems.map((i) => i.id)
+  );
 
   // A PICKED item's qtyToPick is its original target, which can now exceed
   // what was actually picked (a partial pick's shortfall lives in a
@@ -251,12 +272,10 @@ export async function reconcileOrderLineAllocation(
     const siblingAllocated = siblingItems.reduce((sum, i) => sum + (i.status === "PICKED" ? 0 : i.qtyToPick), 0);
     // Re-fetch (rather than reuse the pre-reclaim map from above) since the
     // reclaim loop just mutated these rows.
-    const pendingAfterReclaim = await tx.putBackTask.groupBy({
-      by: ["sourcePickListItemId"],
-      where: { sourcePickListItemId: { in: thisLineItems.map((i) => i.id) }, status: "PENDING" },
-      _sum: { quantity: true },
-    });
-    const pendingBySourceItemNow = new Map(pendingAfterReclaim.map((p) => [p.sourcePickListItemId, p._sum.quantity ?? 0]));
+    const pendingBySourceItemNow = await pendingPutBackByItem(
+      tx,
+      thisLineItems.map((i) => i.id)
+    );
     // This line's own already-PICKED quantity is physically off the shelf
     // (StockItem was already decremented at pick-confirm time) and so isn't
     // part of totalOnHand — it has to be credited back in here, or a line

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requirePermission, type AuthedRequest } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
-import { applyStockMovement } from "../lib/stock.js";
+import { applyStockMovement, pendingPutBackByItem } from "../lib/stock.js";
 import { encryptNumber, decryptNumber } from "../lib/crypto.js";
 import { resolveUnitFactor, toBaseQty, InvalidUnitError } from "../lib/units.js";
 
@@ -127,6 +127,17 @@ invoiceReferencesRouter.post("/:id/cancel", async (req: AuthedRequest, res) => {
         const pickItems = await tx.pickListItem.findMany({
           where: { orderId: ref.orderId, skuId: line.skuId, status: "PICKED" },
         });
+        // A pending (unconfirmed) PutBackTask may already be queued against
+        // one of these items — from a Final Qty reduction made while the
+        // order was still LOADED, before this invoice got cancelled. Net it
+        // out here, or this reversal and that put-back's eventual
+        // confirmation would both credit the same stock back a second time
+        // (the same class of bug as reconcileOrderLineAllocation's — see
+        // lib/stock.ts's pendingPutBackByItem).
+        const pendingBySourceItem = await pendingPutBackByItem(
+          tx,
+          pickItems.map((i) => i.id)
+        );
         // qtyPicked (on PickListItem) is always base-unit (Pcs) — reverse
         // using the base-unit equivalent of what was billed, not the
         // billed-unit qty itself (qtyBaseUnits is null only on rows that
@@ -134,7 +145,8 @@ invoiceReferencesRouter.post("/:id/cancel", async (req: AuthedRequest, res) => {
         let remaining = line.qtyBaseUnits ?? line.qty;
         for (const item of pickItems) {
           if (remaining <= 0) break;
-          const restore = Math.min(item.qtyPicked, remaining);
+          const stillOwed = item.qtyPicked - (pendingBySourceItem.get(item.id) ?? 0);
+          const restore = Math.min(stillOwed, remaining);
           if (restore <= 0) continue;
           await applyStockMovement(tx, {
             skuId: line.skuId,
@@ -196,7 +208,41 @@ invoiceReferencesRouter.post("/:id/adjust", async (req: AuthedRequest, res) => {
       const existingQtyBaseUnits = existingLine.qtyBaseUnits ?? existingLine.qty;
       const qtyDelta = existingQtyBaseUnits - newQtyBaseUnits; // positive = billed qty went down -> stock returned (base units)
 
-      if (qtyDelta !== 0) {
+      if (qtyDelta > 0) {
+        // Billed qty went down — stock is being returned. Spread it across
+        // this SKU's picked items the same way order cancellation and
+        // Invoice Reference cancellation do, netting each by any put-back
+        // already pending against it so this can never credit a return
+        // that's already queued elsewhere (see pendingPutBackByItem).
+        const pickItems = await tx.pickListItem.findMany({ where: { orderId: ref.orderId, skuId: existingLine.skuId, status: "PICKED" } });
+        const pendingBySourceItem = await pendingPutBackByItem(
+          tx,
+          pickItems.map((i) => i.id)
+        );
+        let remaining = qtyDelta;
+        for (const item of pickItems) {
+          if (remaining <= 0) break;
+          const stillOwed = item.qtyPicked - (pendingBySourceItem.get(item.id) ?? 0);
+          const restore = Math.min(stillOwed, remaining);
+          if (restore <= 0) continue;
+          await applyStockMovement(tx, {
+            skuId: existingLine.skuId,
+            locationId: item.locationId,
+            batchId: item.batchId,
+            quantity: restore,
+            type: "ADJUSTMENT",
+            reason: `Invoice ${ref.tallyInvoiceNumber} adjustment`,
+            refInvoiceRefId: ref.id,
+            refOrderId: ref.orderId,
+            userId: req.user!.id,
+          });
+          remaining -= restore;
+        }
+      } else if (qtyDelta < 0) {
+        // Billed qty went up — a plain negative ledger adjustment at a
+        // representative picked location. No pending-put-back interplay to
+        // net against here: nothing else will later also draw stock down
+        // for this same pick, so there's no double-counting risk to guard.
         const pickItem = await tx.pickListItem.findFirst({ where: { orderId: ref.orderId, skuId: existingLine.skuId, status: "PICKED" } });
         if (pickItem) {
           await applyStockMovement(tx, {
