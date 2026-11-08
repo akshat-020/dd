@@ -66,7 +66,9 @@ function contactFromRow_(r) {
     firm: r.Firm ? String(r.Firm) : '',
     tag: parseTag(r.Tag) || 'UNKNOWN',
     ownerStaff: r['Owner staff'] ? String(r['Owner staff']) : '',
-    voiceOnly: truthy_(r['Voice only'])
+    voiceOnly: truthy_(r['Voice only']),
+    notes: r.Notes ? String(r.Notes) : '',
+    nameGuessed: /\(name from WhatsApp\)/.test(String(r.Notes || ''))
   };
 }
 
@@ -94,6 +96,51 @@ function setContactTag_(phone, tag) {
   if (existing && existing.row) {
     updateRow_(SHEETS.CONTACTS, existing.row, { Tag: tag, Updated: new Date() });
   } else {
-    appendObject_(SHEETS.CONTACTS, { Phone: phone, Tag: tag, Updated: new Date() });
+    appendObject_(SHEETS.CONTACTS, { Phone: phone, Tag: tag, Updated: new Date(), Source: 'Founder', 'First seen': new Date() });
   }
+}
+
+/**
+ * A number not in Contacts (and not staff) is saved the first time it calls
+ * or messages, tagged UNKNOWN, so the front desk has one "to tag" list
+ * (filter Contacts by Tag = UNKNOWN).
+ */
+function ensureContact_(phone, source) {
+  var existing = findContact_(phone);
+  if (existing) return existing;
+  appendObject_(SHEETS.CONTACTS, { Phone: phone, Tag: 'UNKNOWN', Source: source, 'First seen': new Date(), Updated: new Date() });
+  return findContact_(phone);
+}
+
+/**
+ * Fills in who a caller is. Name only overwrites a blank (or WhatsApp-guessed)
+ * name unless force is set; VIP-class tags can only be set by the founder.
+ * Returns an error string, or null on success.
+ */
+function nameContact_(phone, name, tag, byFounder, force) {
+  if (tag && VIP_TAGS.indexOf(tag) >= 0 && !byFounder) return 'VIP tag sirf founder laga sakte hain';
+  var c = ensureContact_(phone, 'Staff');
+  if (!c.row) return 'Yeh staff ka number hai';
+  if (c.tag && VIP_TAGS.indexOf(c.tag) >= 0 && tag && tag !== c.tag && !byFounder) return 'VIP contact ka tag sirf founder badal sakte hain';
+  var patch = { Updated: new Date() };
+  if (name && (force || !c.name || c.nameGuessed)) patch.Name = name;
+  if (tag) patch.Tag = tag;
+  if (name && c.nameGuessed) patch.Notes = String(c.notes || '').replace(/\s*\(name from WhatsApp\)/, '');
+  updateRow_(SHEETS.CONTACTS, c.row, patch);
+  // Open tickets for this number pick up the name/tag too.
+  allTickets_().filter(function (t) { return t.phone === phone && isOpen_(t); }).forEach(function (t) {
+    var tp = {};
+    if (patch.Name) tp.Name = patch.Name;
+    if (tag) tp.Tag = tag;
+    if (tp.Name || tp.Tag) updateTicket_(t, tp);
+  });
+  return null;
+}
+
+/** WhatsApp sends the sender's profile name — a useful guess for an unnamed contact. */
+function guessNameFromWhatsApp_(phone, profileName) {
+  if (!profileName) return;
+  var c = findContact_(phone);
+  if (!c || !c.row || c.name) return;
+  updateRow_(SHEETS.CONTACTS, c.row, { Name: String(profileName).slice(0, 80), Notes: ((c.notes || '') + ' (name from WhatsApp)').trim(), Updated: new Date() });
 }

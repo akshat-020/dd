@@ -104,6 +104,20 @@ function createEnv({ start }) {
     },
     ContentService: { createTextOutput: (s) => ({ text: String(s) }) },
     Session: { getActiveUser: () => ({ getEmail: () => 'pooja@example.com' }) },
+    // People API advanced service: env.googleContacts = { groups: [...], people: [...] }
+    People: {
+      ContactGroups: { list: () => ({ contactGroups: (context.__google || {}).groups || [] }) },
+      People: {
+        Connections: {
+          list: (_who, opts) => {
+            const people = (context.__google || {}).people || [];
+            const start = opts.pageToken ? Number(opts.pageToken) : 0;
+            const page = people.slice(start, start + 2); // small pages to exercise paging
+            return { connections: page, nextPageToken: start + 2 < people.length ? String(start + 2) : undefined };
+          },
+        },
+      },
+    },
     ScriptApp: { getProjectTriggers: () => [], newTrigger: () => triggerChain, WeekDay: {}, getService: () => ({ getUrl: () => 'https://script.example/exec' }) },
   };
   vm.createContext(context);

@@ -10,6 +10,7 @@ function onOpen() {
     .addItem('Test: simulate a missed call', 'simulateMissedCall')
     .addItem('Send today\'s digest now', 'digestJob')
     .addItem('Build routing lists for the phone line', 'buildRoutingLists')
+    .addItem('Sync contacts from Google Contacts now', 'syncContactsNow')
     .addToUi();
 }
 
@@ -92,8 +93,10 @@ function installTriggers() {
   ScriptApp.newTrigger('bundleJob').timeBased().atHour(17).everyDays(1).inTimezone(tz).create();
   ScriptApp.newTrigger('digestJob').timeBased().atHour(19).nearMinute(30).everyDays(1).inTimezone(tz).create();
   ScriptApp.newTrigger('weeklyJob').timeBased().onWeekDay(ScriptApp.WeekDay.SATURDAY).atHour(18).inTimezone(tz).create();
+  ScriptApp.newTrigger('followupJob').timeBased().atHour(11).nearMinute(30).everyDays(1).inTimezone(tz).create();
+  ScriptApp.newTrigger('syncContactsJob').timeBased().atHour(2).everyDays(1).inTimezone(tz).create();
   ScriptApp.newTrigger('onTicketEdit').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
-  SpreadsheetApp.getUi().alert('Timers installed: reminders every 10 min, founder bundles at 1 pm and 5 pm, digest ~7:30 pm, weekly summary Saturday 6 pm.');
+  SpreadsheetApp.getUi().alert('Timers installed: reminders every 10 min, founder bundles at 1 pm and 5 pm, follow-ups ~11:30 am, digest ~7:30 pm, weekly summary Saturday 6 pm, contact sync 2 am.');
 }
 
 /**
@@ -113,7 +116,8 @@ function onTicketEdit(e) {
     if (!r.ID && r.Phone) {
       var phone = normalizePhone(r.Phone);
       if (!phone) return updateRow_(SHEETS.TICKETS, row, { Summary: '⚠️ Phone number not valid — fix it and edit again' });
-      var contact = findContact_(phone);
+      var contact = ensureContact_(phone, 'Front desk');
+      if (r.Name && !contact.name && contact.row) updateRow_(SHEETS.CONTACTS, contact.row, { Name: r.Name, Updated: new Date() });
       var triage = triageFor(contact ? contact.tag : 'UNKNOWN', contact && contact.voiceOnly, false) || { priority: 'P3', owner: 'FRONT_DESK' };
       var priority = PRIORITIES.indexOf(String(r.Priority)) >= 0 ? String(r.Priority) : triage.priority;
       var owner = staffByName_(r.Owner) || resolveOwner_(triage.owner, contact);
@@ -127,8 +131,18 @@ function onTicketEdit(e) {
       notifyForTicket_(t, '📝 Front desk');
       return;
     }
-    if (r.ID && headers[e.range.getColumn() - 1] === 'Status' && (r.Status === 'DONE' || r.Status === 'IGNORED') && !r['Closed at']) {
-      updateRow_(SHEETS.TICKETS, row, { 'Closed at': new Date(), 'Closed by': editor, Updated: new Date() });
+    var edited = headers[e.range.getColumn() - 1];
+    if (r.ID && edited === 'Status' && (r.Status === 'DONE' || r.Status === 'IGNORED') && !r['Closed at']) {
+      var closing = { 'Closed at': new Date(), 'Closed by': editor, Updated: new Date() };
+      if (r.Status === 'DONE') closing.Verified = callbackMadeFor_(ticketFromRow_(r)) ? 'YES' : 'NO';
+      updateRow_(SHEETS.TICKETS, row, closing);
+    }
+    // Naming/tagging a caller on the ticket saves it to Contacts, so the next call routes right.
+    // (The sheet can't tell who is editing, so VIP tags are only set in Contacts or by the founder's WhatsApp.)
+    if (r.ID && (edited === 'Tag' || edited === 'Name')) {
+      var tag = edited === 'Tag' ? parseTag(r.Tag) : null;
+      var err = nameContact_(normalizePhone(r.Phone), edited === 'Name' ? String(r.Name || '').trim() : '', tag, false, true);
+      if (err) updateRow_(SHEETS.TICKETS, row, { 'Outcome note': '⚠️ ' + err });
     }
   });
 }

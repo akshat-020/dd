@@ -7,6 +7,7 @@ function remindersJob() {
     var hours = businessHours_();
     expireMode_(now);
     var founder = founder_();
+    nudgeOutcomes_(now);
 
     allTickets_().filter(isOpen_).forEach(function (t) {
       if (t.remindAt && now >= t.remindAt) {
@@ -42,6 +43,47 @@ function remindersJob() {
       }
     });
   });
+}
+
+/** One reminder to staff who haven't tapped an outcome after an answered call. */
+function nudgeOutcomes_(now) {
+  var waitMs = (Number(setting_('OUTCOME_NUDGE_MINUTES', 60)) || 60) * 60000;
+  readLastRows_(SHEETS.CALLS, 500).forEach(function (c) {
+    var t = asDate_(c.Time);
+    if (c.Outcome !== 'PENDING' || !t || now.getTime() - t.getTime() < waitMs) return;
+    var staff = staffByName_(c['Answered by']);
+    updateRow_(SHEETS.CALLS, c._row, { Outcome: 'NUDGED' });
+    if (!staff || !staff.phone) return;
+    var ref = 'C' + c._row;
+    notifyInternal_(staff.phone, '⏰ ' + (c.Name || c.Phone) + ' wali call ka outcome? (' + shortTime(t) + ')', 'OUTCOME_NUDGE', ref, [
+      { id: ref + ':1', title: 'Ho gaya' },
+      { id: ref + ':2', title: 'Callback chahiye' },
+      { id: ref + ':3', title: 'Sir ko batana hai' }
+    ]);
+  });
+}
+
+/**
+ * Daily late morning: "kaam hua?" to callers in FOLLOWUP_TAGS whose callback
+ * was closed as DONE yesterday. "Nahi" reopens the ticket for the deputy.
+ */
+function followupJob() {
+  var tags = String(setting_('FOLLOWUP_TAGS', '')).split(/[,\s]+/).map(parseTag).filter(Boolean);
+  if (!tags.length) return 'follow-ups off';
+  var now = new Date();
+  var yesterday = istYmd(new Date(now.getTime() - 86400000));
+  var sent = 0;
+  withLock_(function () {
+    allTickets_().forEach(function (t) {
+      if (t.status !== 'DONE' || !t.closedAt || istYmd(t.closedAt) !== yesterday || t.followUp || tags.indexOf(t.tag) < 0) return;
+      var contact = findContact_(t.phone);
+      if (contact && contact.voiceOnly) return; // can't read it — the callback was the check
+      var r = sendFollowup_(t.phone, t.id);
+      updateTicket_(t, { 'Follow-up': r.ok ? 'SENT' : 'FAILED' });
+      if (r.ok) sent++;
+    });
+  });
+  return sent + ' follow-ups sent';
 }
 
 function alertFounderOrOwner_(t, reason) {
@@ -114,7 +156,11 @@ function digestData_(now) {
   var untagged = Object.keys(counts).filter(function (p) { return counts[p] >= 3 && !findContact_(p); })
     .map(function (p) { return { phone: p, count: counts[p] }; });
 
+  var requireLine = truthy_(setting_('REQUIRE_CALLBACK_VIA_LINE', 'FALSE'));
   return {
+    noOutcome: calls.filter(function (c) { return c.Outcome === 'PENDING' || c.Outcome === 'NUDGED'; }).length,
+    cameBack: tickets.filter(function (t) { return t.cameBack > 0 && t.closedAt && now.getTime() - t.closedAt.getTime() < 2 * 86400000; }).length,
+    unverified: requireLine ? tickets.filter(function (t) { return t.verified === 'NO' && t.closedAt && istYmd(t.closedAt) === today; }).length : 0,
     date: Utilities.formatDate(now, 'Asia/Kolkata', 'EEE d MMM'),
     calls: calls.length,
     answered: calls.filter(function (c) { return c.Answered === 'YES'; }).length,
@@ -131,27 +177,65 @@ function digestData_(now) {
   };
 }
 
-/** Saturday evening: the week in numbers. */
+/** Saturday evening: the week in numbers, a scorecard per staff member, and calls to spot-check. */
 function weeklyJob() {
   var now = new Date();
+  var founder = founder_();
+  notifyInternal_(founder.phone, weeklyText_(now, Math.random), 'WEEKLY', null, null);
+}
+
+function weeklyText_(now, random) {
   var weekAgo = now.getTime() - 7 * 86400000;
   var calls = readLastRows_(SHEETS.CALLS, 6000).filter(function (c) {
     var t = asDate_(c.Time);
-    return t && t.getTime() >= weekAgo && c.Direction === 'INBOUND';
+    return t && t.getTime() >= weekAgo;
   });
+  var inbound = calls.filter(function (c) { return c.Direction === 'INBOUND'; });
   var byTag = {};
-  calls.forEach(function (c) { byTag[c.Tag || 'UNKNOWN'] = (byTag[c.Tag || 'UNKNOWN'] || 0) + 1; });
+  inbound.forEach(function (c) { byTag[c.Tag || 'UNKNOWN'] = (byTag[c.Tag || 'UNKNOWN'] || 0) + 1; });
   var tickets = allTickets_().filter(function (t) { return t.created && t.created.getTime() >= weekAgo; });
-  var closedOnTime = tickets.filter(function (t) { return t.status === 'DONE' && t.closedAt && t.deadline && t.closedAt <= t.deadline; }).length;
   var lostLeads = tickets.filter(function (t) {
-    return (t.tag === 'LEAD' || t.tag === 'BUYER' || t.tag === 'BUYER_TOP') && (t.status === 'UNREACHABLE' || (isOpen_(t) && t.deadline && now > t.deadline) || (t.closedAt && t.deadline && t.closedAt > t.deadline));
+    return (t.tag === 'LEAD' || t.tag === 'BUYER' || t.tag === 'BUYER_TOP') &&
+      (t.status === 'UNREACHABLE' || (isOpen_(t) && t.deadline && now > t.deadline) || (t.closedAt && t.deadline && t.closedAt > t.deadline));
   });
 
   var lines = ['📊 Weekly call summary', ''];
-  lines.push('Incoming calls: ' + calls.length + ' · answered ' + calls.filter(function (c) { return c.Answered === 'YES'; }).length);
-  lines.push('By type: ' + Object.keys(byTag).sort(function (a, b) { return byTag[b] - byTag[a]; }).map(function (k) { return k.toLowerCase().replace(/_/g, ' ') + ' ' + byTag[k]; }).join(' · '));
-  lines.push('Callbacks: ' + tickets.length + ' · on time ' + (tickets.length ? Math.round((closedOnTime / tickets.length) * 100) : 100) + '%');
+  lines.push('Incoming calls: ' + inbound.length + ' · answered ' + inbound.filter(function (c) { return c.Answered === 'YES'; }).length);
+  lines.push('By type: ' + Object.keys(byTag).sort(function (a, b) { return byTag[b] - byTag[a]; })
+    .map(function (k) { return k.toLowerCase().replace(/_/g, ' ') + ' ' + byTag[k]; }).join(' · '));
   lines.push('Buyer/lead callbacks late or missed: ' + lostLeads.length);
   lostLeads.slice(0, 8).forEach(function (t) { lines.push('  #' + t.id + ' ' + (t.callerName || t.phone) + ' (' + t.owner + ')'); });
-  notifyInternal_(founder_().phone, lines.join('\n'), 'WEEKLY', null, null);
+
+  lines.push('');
+  lines.push('👥 SCORECARD');
+  var perStaff = Math.max(0, Number(setting_('RECORDINGS_PER_STAFF', 5)) || 0);
+  var spot = [];
+  staffList_().filter(function (s) { return s.role !== 'FOUNDER'; }).forEach(function (s) {
+    var rung = 0, answered = 0;
+    inbound.forEach(function (c) {
+      var by = String(c['Answered by'] || '');
+      var missed = String(c['Missed by'] || '').split(/,\s*/);
+      if (by === s.name) { rung++; answered++; } else if (missed.indexOf(s.name) >= 0) rung++;
+    });
+    var mine = tickets.filter(function (t) { return t.owner === s.name; });
+    var onTime = mine.filter(function (t) { return t.status === 'DONE' && t.closedAt && t.deadline && t.closedAt <= t.deadline; }).length;
+    var verified = mine.filter(function (t) { return t.verified === 'YES'; }).length;
+    var cameBack = mine.filter(function (t) { return t.cameBack > 0; }).length;
+    var noOutcome = inbound.filter(function (c) { return c['Answered by'] === s.name && (c.Outcome === 'PENDING' || c.Outcome === 'NUDGED'); }).length;
+    lines.push(s.name + ' — rung ' + rung + ' · answered ' + answered + (rung ? ' (' + Math.round((answered / rung) * 100) + '%)' : '') +
+      ' · callbacks ' + mine.length + ', on time ' + onTime + ', verified ' + verified +
+      ' · came back ' + cameBack + (noOutcome ? ' · no outcome ' + noOutcome : ''));
+
+    var recorded = inbound.filter(function (c) { return c['Answered by'] === s.name && c.Recording; });
+    for (var i = 0; i < perStaff && recorded.length; i++) {
+      var pick = recorded.splice(Math.floor(random() * recorded.length), 1)[0];
+      spot.push(s.name + ': ' + (pick.Name || pick.Phone) + ' ' + pick.Recording);
+    }
+  });
+  if (spot.length) {
+    lines.push('');
+    lines.push('🎧 Calls to spot-check:');
+    spot.forEach(function (x) { lines.push(x); });
+  }
+  return lines.join('\n');
 }

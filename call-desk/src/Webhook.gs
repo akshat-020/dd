@@ -59,6 +59,8 @@ function handleWhatsAppWebhook_(body) {
   (body.entry || []).forEach(function (entry) {
     (entry.changes || []).forEach(function (change) {
       var value = change.value || {};
+      var profiles = {};
+      (value.contacts || []).forEach(function (c) { if (c.wa_id && c.profile) profiles[c.wa_id] = c.profile.name; });
       (value.messages || []).forEach(function (m) {
         // Meta retries deliveries it thinks failed — process each message once.
         if (cache.get('wa:' + m.id)) return;
@@ -72,7 +74,8 @@ function handleWhatsAppWebhook_(body) {
           from: normalizePhone('+' + m.from),
           text: text,
           contextId: m.context && m.context.id,
-          waId: m.id
+          waId: m.id,
+          profileName: profiles[m.from] || ''
         }));
       });
       (value.statuses || []).forEach(function (s) {

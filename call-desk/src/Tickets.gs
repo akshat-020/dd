@@ -19,7 +19,10 @@ function ticketFromRow_(r) {
     reminded: truthy_(r.Reminded),
     escalated: asDate_(r.Escalated),
     remindAt: asDate_(r['Remind at']),
-    closedAt: asDate_(r['Closed at'])
+    closedAt: asDate_(r['Closed at']),
+    verified: r.Verified ? String(r.Verified) : '',
+    cameBack: Number(r['Came back'] || 0),
+    followUp: r['Follow-up'] ? String(r['Follow-up']) : ''
   };
 }
 
@@ -67,8 +70,14 @@ function updateTicket_(ticket, patch) {
   updateRow_(SHEETS.TICKETS, ticket.row, patch);
 }
 
-function closeTicket_(ticket, status, closedBy, note) {
-  updateTicket_(ticket, { Status: status, 'Closed at': new Date(), 'Closed by': closedBy, 'Outcome note': note || '' });
+/**
+ * Closing as DONE records whether a callback through the business line
+ * actually happened (Verified = YES/NO) — the "closed without a call" check.
+ */
+function closeTicket_(ticket, status, closedBy, note, verified) {
+  var patch = { Status: status, 'Closed at': new Date(), 'Closed by': closedBy, 'Outcome note': note || '' };
+  if (status === 'DONE') patch.Verified = verified || (callbackMadeFor_(ticket) ? 'YES' : 'NO');
+  updateTicket_(ticket, patch);
 }
 
 function founderMode_() {

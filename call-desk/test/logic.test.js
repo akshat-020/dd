@@ -149,3 +149,43 @@ test('alert and digest formatting', () => {
   assert.match(digest, /Rohit 1\/2 🔴/);
   assert.match(digest, /\+919899999999 \(4\)/);
 });
+
+test('naming replies, tag words, label maps', () => {
+  assert.deepEqual(L.parseCommand('N Mukesh Hardware buyer'), { type: 'name', name: 'Mukesh Hardware', tag: 'BUYER' });
+  assert.deepEqual(L.parseCommand('n Ramesh driver'), { type: 'name', name: 'Ramesh', tag: 'TRANSPORT' });
+  assert.deepEqual(L.parseCommand('N Verma ji'), { type: 'name', name: 'Verma ji', tag: null });
+  assert.deepEqual(L.parseCommand('N buyer'), { type: 'name', name: 'buyer', tag: null }); // a lone word is a name
+  assert.deepEqual(L.parseCommand('C12:2'), { type: 'outcome', callRow: 12, code: 2 });
+  assert.deepEqual(L.parseCommand('F147:n'), { type: 'followup', ticketId: 147, ok: false });
+  assert.deepEqual(L.parseLabelMap('VIP=BUYER_TOP, Bank = vip-finance, Junk=whatever, =BUYER'), { vip: 'BUYER_TOP', bank: 'VIP_FINANCE' });
+});
+
+test('contact sync plan: sheet stays master for tags, personal contacts stay out unless labelled', () => {
+  const existing = [
+    { row: 2, phones: ['+919810000001'], name: '', tag: 'UNKNOWN' },
+    { row: 3, phones: ['+919810000002'], name: 'Gupta ji', tag: 'VENDOR' },
+  ];
+  const google = [
+    { name: 'Sharma Traders', phones: ['098100 00001'], labels: ['VIP'] },
+    { name: 'Gupta Steel', phones: ['+91 98100 00002'], labels: ['Buyer'] }, // sheet already has a name and tag
+    { name: 'Bank RM', phones: ['9810000005', '9810000006'], labels: ['Buyer', 'Bank'] },
+    { name: 'Dentist', phones: ['9810000007'], labels: [] },
+    { name: 'No phone', phones: [], labels: ['VIP'] },
+    { name: 'Bad', phones: ['123'], labels: ['VIP'] },
+  ];
+  const map = L.parseLabelMap('VIP=BUYER_TOP,Bank=VIP_FINANCE,Buyer=BUYER');
+  const plan = L.planContactSync(existing, google, map, true);
+  assert.deepEqual(plan.updates, [{ row: 2, name: 'Sharma Traders', tag: 'BUYER_TOP' }]);
+  assert.deepEqual(plan.adds, [{ phone: '+919810000005', phone2: '+919810000006', name: 'Bank RM', tag: 'VIP_FINANCE' }]);
+  const all = L.planContactSync(existing, google, map, false);
+  assert.deepEqual(all.adds.map((a) => a.name), ['Bank RM', 'Dentist']);
+  assert.equal(all.adds[1].tag, 'UNKNOWN');
+});
+
+test('dropped calls and missedBy mapping', () => {
+  assert.equal(L.isDroppedCall({ answered: true, durationSec: 6 }, 15), true);
+  assert.equal(L.isDroppedCall({ answered: true, durationSec: 40 }, 15), false);
+  assert.equal(L.isDroppedCall({ answered: false, durationSec: 0 }, 15), false);
+  assert.deepEqual(L.mapGenericEvent({ from: '9810000001', missedBy: '9800000004, Rohit' }).missedBy, ['9800000004', 'Rohit']);
+  assert.deepEqual(L.mapGenericEvent({ from: '9810000001' }).missedBy, []);
+});

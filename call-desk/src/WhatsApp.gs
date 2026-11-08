@@ -114,12 +114,30 @@ function sendUnreachable_(phone, ticketId) {
   return sendTemplate_(phone, setting_('WA_TEMPLATE_ACK_UNREACHABLE', 'ack_unreachable'), [company], 'ACK_UNREACHABLE', ticketId, text);
 }
 
-/** Which ticket an incoming reply refers to, from the message it quoted. */
-function ticketForReplyContext_(waId) {
+/** The ticket number or call ref ("C12") of the message an incoming reply quoted. */
+function refForReplyContext_(waId) {
   if (!waId) return null;
   var rows = readLastRows_(SHEETS.MESSAGES, 2000);
   for (var i = rows.length - 1; i >= 0; i--) {
-    if (rows[i]['WhatsApp ID'] === waId && rows[i].Ticket) return Number(rows[i].Ticket);
+    if (rows[i]['WhatsApp ID'] === waId && rows[i].Ticket) return String(rows[i].Ticket);
   }
   return null;
+}
+
+/** Next-day "kaam hua?" — a template with Haan / Nahi quick-reply buttons. */
+function sendFollowup_(phone, ticketId) {
+  var company = setting_('COMPANY_NAME', 'Office');
+  var text = 'Namaste 🙏 ' + company + ' se kal aapse baat hui thi. Kya aapka kaam ho gaya? [Haan] [Nahi]';
+  return send_(phone, {
+    type: 'template',
+    template: {
+      name: setting_('WA_TEMPLATE_FOLLOWUP', 'followup_check'),
+      language: { code: setting_('WA_TEMPLATE_LANG', 'hi') },
+      components: [
+        { type: 'body', parameters: [{ type: 'text', text: templateParam_(company) }] },
+        { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: 'F' + ticketId + ':Y' }] },
+        { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: 'F' + ticketId + ':N' }] }
+      ]
+    }
+  }, 'FOLLOWUP', ticketId, text);
 }

@@ -25,6 +25,15 @@ Design: [`docs/call-desk/CALL_DESK_SYSTEM.md`](../docs/call-desk/CALL_DESK_SYSTE
 | Saturday 6 pm | **Weekly summary**: calls by type, on-time %, late buyer/lead callbacks. |
 | A caller replies on WhatsApp | Noted on their open ticket (or a new ticket is made) and the owner is told. |
 | Front desk types a phone number on an empty Tickets row | The rest is filled in and the owner is notified. Setting Status to DONE by hand stamps who closed it. |
+| **A new number calls or messages** | Saved to **Contacts** as `UNKNOWN`, with the date first seen. Filter Contacts by Tag = UNKNOWN to get the "to tag" list. If they message on WhatsApp, their WhatsApp profile name is filled in as a guess. |
+| **Staff answer a call** | They get one WhatsApp: *"Sharma Traders se baat (3 min). Kya hua? [Ho gaya] [Callback chahiye] [Sir ko batana hai]"*. **Callback chahiye** makes a ticket in their name. **Sir ko batana hai** makes a founder ticket and alerts him. They get one reminder if they don't tap within an hour, and the digest counts calls with no outcome. The founder is never asked; he only gets a "save this number?" for new numbers. |
+| **An "answered" call under 15 s** | Treated as dropped: ticket and acknowledgement, like a missed call. |
+| **Naming a caller** | Reply to any call or ticket message with `N Mukesh Hardware buyer`. The type word is optional (buyer, lead, vendor, driver, broker, govt, spam…). Or type the Name/Tag on the ticket row. Either way it's saved to Contacts and the next call routes correctly. VIP tags can only be set by the founder. |
+| **A callback is closed** | Marked **Verified YES** if there was a call to that number through the business line, **NO** if not. With `REQUIRE_CALLBACK_VIA_LINE = TRUE` (once the phone line is live), the digest counts "closed without a call". |
+| **A caller calls again within 48 h of a closed callback** | The old ticket is marked **Came back**. If 2 callbacks for them were closed in 48 h, the new ticket goes to the **deputy** (or the founder, if the deputy handled it) at P1 or higher. |
+| **Next day ~11:30** | Buyers (setting `FOLLOWUP_TAGS`) whose callback was closed yesterday get *"Kya aapka kaam ho gaya? [Haan] [Nahi]"*. **Nahi** reopens the ticket for the deputy, and the caller is told when they'll be called. Voice-only callers are skipped. |
+| **Every night 2 am** | **Google Contacts sync** (below). |
+| **Saturday summary** | Now includes a **scorecard per staff member**: rung, answered %, callbacks, on time, verified, came back, no outcome. It also lists up to 5 random recorded calls each to spot-check. |
 
 ### WhatsApp commands (founder and staff)
 
@@ -39,6 +48,8 @@ Design: [`docs/call-desk/CALL_DESK_SYSTEM.md`](../docs/call-desk/CALL_DESK_SYSTE
 | `A` `B` `M 4pm` `D` `T` | Founder mode: Available, Busy, Meeting till 4 pm, DND, Travelling |
 | `VIP 98xxxxxxxx bank` | Make a number VIP (`bank`, `family`, `vendor`, `govt`; default top buyer) |
 | `BLOCK 98xxxxxxxx` | Block a number |
+| `N Mukesh Hardware buyer` | (reply to a call or ticket message) save who the caller is |
+| any other text, replying to a ticket message | saved as a note on that ticket |
 | `help` | List of commands |
 
 When replying to an alert, the ticket number is optional. The buttons on alerts do the same thing.
@@ -73,6 +84,19 @@ When replying to an alert, the ticket number is optional. The buttons on alerts 
 11. **Connect the phone line.** Point the provider's "call ended" webhook or Passthru at the phone-line URL (see below).
 12. **Routing lists:** run **Build routing lists for the phone line** and load the lists into the provider's caller groups. That's where live routing happens: VIPs ring the founder, blocked numbers are rejected. Rebuild after editing Contacts.
 
+### Google Contacts sync
+
+Every night the script copies contacts from the **Google account that owns the script** into the Contacts tab:
+- **Labels become tags.** In the Google Contacts app (or contacts.google.com), give people labels like `VIP`, `Bank`, `Family`, `Buyer`, `Vendor`, `Transport` or `Block`. The mapping is in the `CONTACT_LABELS` setting; edit it to use your own label names.
+- **The sheet stays the master.** A tag or name already in the sheet is never overwritten.
+- **Personal contacts stay out.** With `SYNC_ONLY_LABELLED = TRUE` (the default), only labelled contacts are copied, because staff can see the sheet. Unlabelled contacts only fill in names for numbers already in the sheet.
+- On an iPhone, set Settings → Contacts → Default Account → Gmail so contacts reach Google.
+- Run it any time from **Call Desk → Sync contacts from Google Contacts now**.
+
+### Keeping VIP tags founder-only
+
+WhatsApp commands and ticket edits already refuse VIP tags from staff. Anyone with edit access to the sheet can still change the Contacts tab directly, though. To stop that, select the Contacts **Tag** column → Data → Protect sheets and ranges → restrict to the founder's account.
+
 ### WhatsApp templates to submit (category: Utility, language: Hindi)
 
 | Setting | Template name | Body |
@@ -82,6 +106,7 @@ When replying to an alert, the ticket number is optional. The buttons on alerts 
 | `WA_TEMPLATE_ACK_VIP` | `ack_vip` | `Namaste {{1}} ji 🙏 Sir abhi call nahi utha paaye. Woh khud aapko {{2}} call karenge. — {{3}}` |
 | `WA_TEMPLATE_ACK_UNREACHABLE` | `ack_unreachable` | `Namaste 🙏 {{1}} se aapko call kiya tha, baat nahi ho paayi. Free hon toh isi number par call karein.` |
 | `WA_TEMPLATE_NOTIFY` | `staff_notify` | `Office update: {{1}}` |
+| `WA_TEMPLATE_FOLLOWUP` | `followup_check` | `Namaste 🙏 {{1}} se kal aapse baat hui thi. Kya aapka kaam ho gaya?` — add two **Quick reply** buttons: `Haan`, `Nahi` |
 
 Meta may ask for sample values, e.g. `Sharma Steels` / `Aaj shaam 7 pm tak`. If a name is changed during approval, update it in Settings.
 
@@ -96,11 +121,20 @@ Meta may ask for sample values, e.g. `Sharma Steels` / `Aaj shaam 7 pm tak`. If 
 ```
 
 - `status`: `answered` / `completed` count as answered; anything else is missed.
+- `answeredBy`: the number (or staff name) that picked up. It's needed for the outcome prompt and the scorecard.
+- `missedBy` (optional): staff numbers or names the line rang who didn't pick up, as a list or comma-separated. It feeds "rung vs answered" in the scorecard.
 - For callbacks made through the line, send `"direction": "outbound"` with `to` = the customer.
 - Phone numbers can be in any Indian format.
 - The same `callId` is only processed once.
 
 **Exotel:** add a *Passthru* applet after *Connect* in the call flow, pointing to the *Exotel* URL. `mapExotelEvent` in `Logic.gs` reads `CallSid`, `CallFrom`, `CallTo`, `DialCallStatus`, `StartTime`, `DialWhomNumber`, `RecordingUrl`, `Direction`. **Check these names against your Exotel account** and adjust that one function if they differ. Other providers: use the generic format, or add a similar mapping function.
+
+## Updating an existing sheet
+
+1. Paste the new `dist/CallDesk.gs` over `Code.gs`, and the new `appsscript.json` over the manifest. Save.
+2. Run **1. Set up sheets** again. It only **adds** the new columns and settings, so existing data is untouched.
+3. Run **3. Install timers** again to add the new timers (follow-ups, contact sync).
+4. Approve the new permission (read contacts) when asked.
 
 ## Things to verify before go-live
 

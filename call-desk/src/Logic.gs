@@ -221,6 +221,18 @@ function parseCommand(text) {
   var button = /^T(\d+):([1-5])(?::(.+))?$/.exec(raw);
   if (button) return ticketCommand(button[2], Number(button[1]), button[3] || null, null);
 
+  // After-call outcome buttons sent to whoever answered: C<call row>:1|2|3
+  var outcome = /^C(\d+):([123])$/.exec(raw);
+  if (outcome) return { type: 'outcome', callRow: Number(outcome[1]), code: Number(outcome[2]) };
+
+  // Next-day "kaam hua?" buttons pressed by a caller: F<ticket>:Y|N
+  var followup = /^F(\d+):([YN])$/i.exec(raw);
+  if (followup) return { type: 'followup', ticketId: Number(followup[1]), ok: followup[2].toUpperCase() === 'Y' };
+
+  // Name/type for a new number: "N Mukesh Hardware buyer"
+  var naming = /^N\s+(.+)$/i.exec(raw);
+  if (naming) return parseNaming(naming[1]);
+
   var upper = raw.toUpperCase();
   if (upper === 'HELP' || upper === '?') return { type: 'help' };
   if (upper === 'DND') return { type: 'mode', mode: 'DND', until: null };
@@ -285,6 +297,9 @@ function mapGenericEvent(body) {
     durationSec: Number(body.durationSec || body.duration || 0) || 0,
     answered: answered,
     answeredBy: body.answeredBy ? String(body.answeredBy) : '',
+    // Staff the line rang who didn't pick up (numbers or names), if the provider reports it.
+    missedBy: (Array.isArray(body.missedBy) ? body.missedBy : String(body.missedBy || '').split(','))
+      .map(function (x) { return String(x).trim(); }).filter(Boolean),
     recordingUrl: body.recordingUrl ? String(body.recordingUrl) : '',
     direction: /^out/i.test(String(body.direction || '')) ? 'OUTBOUND' : 'INBOUND'
   };
@@ -389,6 +404,14 @@ function digestText(data) {
       return s.name + ' ' + s.onTime + '/' + s.assigned + (s.overdue ? ' 🔴' : '');
     }).join(' · '));
   }
+  var flags = [];
+  if (data.noOutcome) flags.push(data.noOutcome + ' answered calls with no outcome');
+  if (data.cameBack) flags.push(data.cameBack + ' callers came back within 48h');
+  if (data.unverified) flags.push(data.unverified + ' callbacks closed without a call');
+  if (flags.length) {
+    out.push('');
+    out.push('🔎 CHECK: ' + flags.join(' · '));
+  }
   if (data.untagged.length) {
     out.push('');
     out.push('⚠️ Untagged numbers calling often: ' + data.untagged.map(function (u) { return u.phone + ' (' + u.count + ')'; }).join(', '));
@@ -398,6 +421,94 @@ function digestText(data) {
   return out.join('\n');
 }
 
+// ---------------------------------------------------------------- contacts
+
+// Everyday words staff use for a caller type.
+var TAG_WORDS = {
+  family: 'VIP_FAMILY', bank: 'VIP_FINANCE', ca: 'VIP_FINANCE', finance: 'VIP_FINANCE',
+  top: 'BUYER_TOP', buyer: 'BUYER', customer: 'BUYER', party: 'BUYER', lead: 'LEAD', new: 'LEAD', enquiry: 'LEAD',
+  vendor: 'VENDOR', supplier: 'VENDOR', staff: 'STAFF', driver: 'TRANSPORT', transport: 'TRANSPORT', truck: 'TRANSPORT',
+  broker: 'PARTNER', partner: 'PARTNER', govt: 'GOVT', sarkari: 'GOVT', spam: 'BLOCK', block: 'BLOCK'
+};
+
+function tagFromWord(word) {
+  if (!word) return null;
+  return parseTag(word) || TAG_WORDS[String(word).trim().toLowerCase()] || null;
+}
+
+/** "Mukesh Hardware buyer" → { name: 'Mukesh Hardware', tag: 'BUYER' }; the type word is optional. */
+function parseNaming(text) {
+  var words = String(text).trim().split(/\s+/);
+  var tag = words.length > 1 ? tagFromWord(words[words.length - 1]) : null;
+  if (tag) words.pop();
+  var name = words.join(' ').trim();
+  return name ? { type: 'name', name: name, tag: tag } : null;
+}
+
+// Tags only the founder may give or take away (they decide who reaches him
+// directly). GOVT is not here: the front desk is usually who finds that out.
+var VIP_TAGS = ['VIP_FAMILY', 'VIP_FINANCE', 'BUYER_TOP', 'VENDOR_KEY'];
+
+/** "VIP=BUYER_TOP, Bank=VIP_FINANCE" → { vip: 'BUYER_TOP', bank: 'VIP_FINANCE' } (label names are case-insensitive). */
+function parseLabelMap(text) {
+  var map = {};
+  String(text || '').split(',').forEach(function (pair) {
+    var kv = pair.split('=');
+    var tag = kv.length === 2 ? parseTag(kv[1]) : null;
+    if (tag && kv[0].trim()) map[kv[0].trim().toLowerCase()] = tag;
+  });
+  return map;
+}
+
+/**
+ * Plans a one-way sync from the founder's Google Contacts into the Contacts tab.
+ * existing: [{ row, phones: ['+91…'], name, tag }]
+ * google:   [{ name, phones: [raw strings], labels: [label names] }]
+ * Rules: the sheet is the master for tags — a tag is only filled in where the
+ * sheet has none (UNKNOWN). Names are only filled in where blank. With
+ * onlyLabelled, unlabelled personal contacts are not copied into the sheet
+ * (staff can see it), but still fill in names for numbers already there.
+ * Returns { adds: [{ phone, phone2, name, tag }], updates: [{ row, name?, tag? }] }.
+ */
+function planContactSync(existing, google, labelMap, onlyLabelled) {
+  var byPhone = {};
+  existing.forEach(function (c) { c.phones.forEach(function (p) { byPhone[p] = c; }); });
+  var adds = [], updates = {}, added = {};
+
+  google.forEach(function (g) {
+    var phones = [];
+    (g.phones || []).forEach(function (raw) {
+      var p = normalizePhone(raw);
+      if (p && phones.indexOf(p) < 0) phones.push(p);
+    });
+    if (!phones.length) return;
+    var tags = (g.labels || []).map(function (l) { return labelMap[String(l).trim().toLowerCase()]; }).filter(Boolean);
+    tags.sort(function (a, b) { return TAGS.indexOf(a) - TAGS.indexOf(b); }); // VIP-class labels win
+    var tag = tags[0] || null;
+    var name = String(g.name || '').trim();
+
+    var match = null;
+    for (var i = 0; i < phones.length && !match; i++) match = byPhone[phones[i]] || null;
+    if (match) {
+      var u = updates[match.row] || { row: match.row };
+      if (!match.name && name) u.name = name;
+      if ((!match.tag || match.tag === 'UNKNOWN') && tag) u.tag = tag;
+      if (u.name || u.tag) updates[match.row] = u;
+      return;
+    }
+    if (onlyLabelled && !tag) return;
+    if (phones.some(function (p) { return added[p]; })) return;
+    phones.forEach(function (p) { added[p] = true; });
+    adds.push({ phone: phones[0], phone2: phones[1] || '', name: name, tag: tag || 'UNKNOWN' });
+  });
+  return { adds: adds, updates: Object.keys(updates).map(function (k) { return updates[k]; }) };
+}
+
+/** An "answered" call this short almost always means it dropped. */
+function isDroppedCall(ev, shortSeconds) {
+  return ev.answered && ev.durationSec > 0 && ev.durationSec < shortSeconds;
+}
+
 // Lets the Node tests load this file with require().
 if (typeof module !== 'undefined') {
   module.exports = {
@@ -405,6 +516,7 @@ if (typeof module !== 'undefined') {
     isOpenAt: isOpenAt, nextOpen: nextOpen, addBusinessMinutes: addBusinessMinutes, computeDeadline: computeDeadline,
     triageFor: triageFor, isRepeatCaller: isRepeatCaller, higherPriority: higherPriority, parseClock: parseClock,
     nextClockTime: nextClockTime, parseCommand: parseCommand, mapGenericEvent: mapGenericEvent, mapExotelEvent: mapExotelEvent,
-    promiseText: promiseText, ackText: ackText, alertText: alertText, staffTaskText: staffTaskText, digestText: digestText
+    promiseText: promiseText, parseNaming: parseNaming, tagFromWord: tagFromWord, parseLabelMap: parseLabelMap,
+    planContactSync: planContactSync, isDroppedCall: isDroppedCall, VIP_TAGS: VIP_TAGS, ackText: ackText, alertText: alertText, staffTaskText: staffTaskText, digestText: digestText
   };
 }
