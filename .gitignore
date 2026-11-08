@@ -1,0 +1,23 @@
+# Dependencies (every workspace)
+node_modules/
+
+# Environment files — never commit secrets (JWT_SECRET, FIELD_ENCRYPTION_KEY)
+.env
+.env.local
+*.env.local
+
+# Build output
+dist/
+dist-ssr/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Editor/OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.local
